@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
+import random
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,9 @@ ROLE_DISPLAY = {
     "witch": "女巫",
     "hunter": "猎人",
 }
+
+HIDDEN_SCOPE = "hidden"
+HUMAN_ONLY_SCOPE = "human_only"
 
 
 def _role_alignment(role_name: str) -> str:
@@ -142,6 +146,57 @@ def _seat_name(raw_name: str) -> str:
         if suffix.isdigit():
             return f"{int(suffix)}号"
     return raw_name
+
+
+def _shuffle_candidates(
+    names: list[str],
+    *,
+    human_name: str | None = None,
+    soften_human_bias: bool = False,
+) -> list[str]:
+    """随机打乱候选列表，并可在需要时降低 1 号排位偏置。"""
+    candidates = [name for name in names if name]
+    random.shuffle(candidates)
+    if soften_human_bias and human_name and human_name in candidates and len(candidates) > 1:
+        candidates = [name for name in candidates if name != human_name] + [human_name]
+    return candidates
+
+
+def _safe_public_text(speech: str, behavior: str, fallback: str) -> str:
+    """尽量只向公屏暴露可公开的最终发言。"""
+    text = str(speech or fallback or "").strip()
+    if not text:
+        return ""
+    suspicious_markers = [
+        "我的发言将",
+        "我应该保持",
+        "我需要保持",
+        "我的目的是",
+        "在这一轮的讨论中",
+        "我会谨慎地",
+        "我会保持冷静",
+        "避免过早暴露自己的身份",
+    ]
+    paragraphs = [seg.strip() for seg in text.split("\n\n") if seg.strip()]
+    public_parts = [
+        seg for seg in paragraphs
+        if not any(marker in seg for marker in suspicious_markers)
+    ]
+    text = "\n\n".join(public_parts).strip() or paragraphs[0]
+    if behavior and text.startswith(f"{behavior}"):
+        text = text[len(behavior):].lstrip("：: \n")
+    return text.strip()
+
+
+async def _safe_call(action_name: str, func, *args, default=None, **kwargs):
+    """AI 调用容错封装，避免单个模型异常导致整局直接终止。"""
+    try:
+        return await func(*args, **kwargs)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        print(f"[user-mode] {action_name} failed: {exc}")
+        return default
 
 
 async def _await_human_action(
@@ -367,20 +422,27 @@ async def werewolves_game_with_human(
                     "夜晚讨论",
                 )
                 logger.log_agent_typing(werewolf.name, "狼人讨论", scope="wolves_only")
-                res = await werewolf.discuss_with_team(
+                res = await _safe_call(
+                    f"{werewolf.name} discuss_with_team",
+                    werewolf.discuss_with_team,
                     _attach_context(
                         await moderator(
                             f"当前处于夜晚狼人讨论阶段（狼人讨论第{turn_idx}轮）。"
                             "请与队友快速同步思路，并尝试形成一致击杀目标。"
+                            "不要仅因为 1 号是人类玩家就机械地优先针对他。"
                         ),
                         context,
-                    )
+                    ),
+                    default=None,
                 )
+                if res is None:
+                    continue
                 speech, behavior, thought, content_raw = _extract_msg_fields(res)
+                public_speech = _safe_public_text(speech, behavior, content_raw)
                 logger.log_message_detail(
                     "狼人讨论",
                     werewolf.name,
-                    speech=speech or content_raw,
+                    speech=public_speech,
                     behavior=behavior,
                     thought=thought,
                     scope="wolves_only",
@@ -388,13 +450,13 @@ async def werewolves_game_with_human(
                 round_public_records.append(
                     {
                         "player": werewolf.name,
-                        "speech": speech or content_raw,
+                        "speech": public_speech,
                         "behavior": behavior,
                         "phase": "狼人夜聊",
                         "scope": "wolves_only",
                     }
                 )
-                await _observe_ai(ai_wolves, _public_msg(werewolf.name, speech or content_raw, behavior), exclude_names={werewolf.name})
+                await _observe_ai(ai_wolves, _public_msg(werewolf.name, public_speech, behavior), exclude_names={werewolf.name})
 
             if human_is_live_wolf:
                 await _human_text_turn(
@@ -415,7 +477,11 @@ async def werewolves_game_with_human(
                     scope="wolves_only",
                 )
 
-            wolf_vote_candidates = [role.name for role in players.current_alive if players.name_to_role.get(role.name) != "werewolf"]
+            wolf_vote_candidates = _shuffle_candidates(
+                [role.name for role in players.current_alive if players.name_to_role.get(role.name) != "werewolf"],
+                human_name=human_name,
+                soften_human_bias=(round_num == 1),
+            )
             wolf_votes: list[str | None] = []
             for werewolf in ai_wolves:
                 await _check_stop()
@@ -428,13 +494,25 @@ async def werewolves_game_with_human(
                     "夜晚投票",
                 )
                 logger.log_agent_typing(werewolf.name, "狼人投票", scope="wolves_only")
-                msg = await werewolf.team_vote(
-                    _attach_context(await moderator(Prompts.to_wolves_vote), context),
+                msg = await _safe_call(
+                    f"{werewolf.name} team_vote",
+                    werewolf.team_vote,
+                    _attach_context(
+                        await moderator(f"{Prompts.to_wolves_vote}\n补充要求：不要因为 1 号是人类玩家就固定首夜刀 1 号。"),
+                        context,
+                    ),
                     [players.name_to_role_obj[name] for name in wolf_vote_candidates if name in players.name_to_role_obj],
+                    default=None,
                 )
+                if msg is None:
+                    if wolf_vote_candidates:
+                        wolf_votes.append(random.choice(wolf_vote_candidates))
+                    continue
                 speech, behavior, thought, content_raw = _extract_msg_fields(msg)
                 raw_vote = (getattr(msg, "metadata", {}) or {}).get("vote")
                 vote_value = str(raw_vote).strip() if raw_vote else None
+                if vote_value not in wolf_vote_candidates:
+                    vote_value = random.choice(wolf_vote_candidates) if wolf_vote_candidates else None
                 wolf_votes.append(vote_value)
                 if vote_value:
                     logger.log_vote(
@@ -477,22 +555,41 @@ async def werewolves_game_with_human(
 
             await _check_stop()
             if human.is_alive and human.role_name == "witch":
-                if human.has_healing and killed_player and killed_player != human_name:
-                    rescue_reply = await _await_human_action(
-                        human_broker,
-                        action_type="witch_rescue",
-                        title="女巫行动：是否使用解药",
-                        prompt=f"今晚被刀的人是 {_seat_name(killed_player)}，你是否使用解药？",
-                        options=[{"label": "使用解药", "value": "yes"}, {"label": "不使用", "value": "no"}],
-                        input_mode="select",
-                        side="center",
-                        stop_event=stop_event,
+                if human.has_healing and killed_player:
+                    if killed_player == human_name:
+                        rescue_reply = await _await_human_action(
+                            human_broker,
+                            action_type="witch_self_killed",
+                            title="女巫行动：你今夜被刀",
+                            prompt="今晚被刀的人是你自己。根据当前规则，女巫不能对自己使用解药，请确认后继续后续行动。",
+                            options=[{"label": "我知道了", "value": "ack"}],
+                            input_mode="select",
+                            side="center",
+                            stop_event=stop_event,
+                        )
+                    else:
+                        rescue_reply = await _await_human_action(
+                            human_broker,
+                            action_type="witch_rescue",
+                            title="女巫行动：是否使用解药",
+                            prompt=f"今晚被刀的人是 {_seat_name(killed_player)}，你是否使用解药？",
+                            options=[{"label": "使用解药", "value": "yes"}, {"label": "不使用", "value": "no"}],
+                            input_mode="select",
+                            side="center",
+                            stop_event=stop_event,
+                        )
+                    logger.log_message_detail(
+                        "女巫行动(解药)",
+                        human_name,
+                        speech="我已查看今晚的刀口并作出解药阶段决定。" if killed_player != human_name else "我已确认自己今夜被刀，且不能对自己使用解药。",
+                        behavior="低头查看药瓶",
+                        thought=None,
+                        scope=HUMAN_ONLY_SCOPE,
                     )
-                    logger.log_message_detail("女巫行动(解药)", human_name, speech="我已作出解药选择。", behavior="低头查看药瓶", thought=None)
-                    if rescue_reply.get("choice") == "yes":
+                    if killed_player != human_name and rescue_reply.get("choice") == "yes":
                         human.has_healing = False
                         killed_player = None
-                        logger.log_action("女巫行动", "1号女巫使用了解药")
+                        logger.log_action("女巫行动", "1号女巫使用了解药", scope=HUMAN_ONLY_SCOPE)
                 if human.has_poison:
                     poison_candidates = [role.name for role in players.current_alive if role.name != human_name and role.name != killed_player]
                     poison_reply = await _await_human_action(
@@ -505,12 +602,19 @@ async def werewolves_game_with_human(
                         side="center",
                         stop_event=stop_event,
                     )
-                    logger.log_message_detail("女巫行动(毒药)", human_name, speech="我已作出毒药选择。", behavior="轻轻握住另一瓶药", thought=None)
+                    logger.log_message_detail(
+                        "女巫行动(毒药)",
+                        human_name,
+                        speech="我已作出毒药选择。",
+                        behavior="轻轻握住另一瓶药",
+                        thought=None,
+                        scope=HUMAN_ONLY_SCOPE,
+                    )
                     poison_choice = str(poison_reply.get("choice") or "").strip()
                     if poison_choice:
                         human.has_poison = False
                         poisoned_player = poison_choice
-                        logger.log_action("女巫行动", f"1号女巫使用毒药毒杀了 {poisoned_player}")
+                        logger.log_action("女巫行动", f"1号女巫使用毒药毒杀了 {poisoned_player}", scope=HUMAN_ONLY_SCOPE)
                 _emit_human_state(event_sink, players, human)
             else:
                 for witch in players.witch:
@@ -522,16 +626,30 @@ async def werewolves_game_with_human(
                         "moderator": moderator,
                         "context": _format_impression_context(witch.name, players, vote_history, round_public_records, round_num, "女巫行动"),
                     }
-                    logger.log_agent_typing(witch.name, "女巫行动")
-                    result = await witch.night_action(game_state)
-                    logger.log_message_detail("女巫行动(解药)", witch.name, speech=result.get("resurrect_speech"), behavior=result.get("resurrect_behavior"), thought=result.get("resurrect_thought"))
-                    logger.log_message_detail("女巫行动(毒药)", witch.name, speech=result.get("poison_speech"), behavior=result.get("poison_behavior"), thought=result.get("poison_thought"))
+                    logger.log_agent_typing(witch.name, "女巫行动", scope=HIDDEN_SCOPE)
+                    result = await _safe_call(f"{witch.name} witch_action", witch.night_action, game_state, default={}) or {}
+                    logger.log_message_detail(
+                        "女巫行动(解药)",
+                        witch.name,
+                        speech=result.get("resurrect_speech"),
+                        behavior=result.get("resurrect_behavior"),
+                        thought=result.get("resurrect_thought"),
+                        scope=HIDDEN_SCOPE,
+                    )
+                    logger.log_message_detail(
+                        "女巫行动(毒药)",
+                        witch.name,
+                        speech=result.get("poison_speech"),
+                        behavior=result.get("poison_behavior"),
+                        thought=result.get("poison_thought"),
+                        scope=HIDDEN_SCOPE,
+                    )
                     if result.get("resurrect"):
                         killed_player = None
-                        logger.log_action("女巫行动", f"使用解药救了 {result.get('resurrect')}")
+                        logger.log_action("女巫行动", f"使用解药救了 {result.get('resurrect')}", scope=HIDDEN_SCOPE)
                     if result.get("poison"):
                         poisoned_player = result.get("poison")
-                        logger.log_action("女巫行动", f"使用毒药毒杀了 {poisoned_player}")
+                        logger.log_action("女巫行动", f"使用毒药毒杀了 {poisoned_player}", scope=HIDDEN_SCOPE)
 
             await _check_stop()
             if human.is_alive and human.role_name == "seer":
@@ -539,6 +657,7 @@ async def werewolves_game_with_human(
                     name for name in players.name_to_role
                     if name != human_name and name not in human.checked_players and any(role.name == name for role in players.current_alive)
                 ]
+                checked_options = _shuffle_candidates(checked_options, human_name=human_name, soften_human_bias=(round_num == 1))
                 if checked_options:
                     reply = await _await_human_action(
                         human_broker,
@@ -555,8 +674,15 @@ async def werewolves_game_with_human(
                         human.checked_players.append(target)
                         result = "狼人" if players.name_to_role.get(target) == "werewolf" else "好人"
                         human.known_identities[target] = result
-                        logger.log_message_detail("预言家行动", human_name, speech=f"我查验了 {_seat_name(target)}。", behavior="闭眼感知命运的回响", thought=None)
-                        logger.log_action("预言家查验", f"查验 {target}, 结果: {result}")
+                        logger.log_message_detail(
+                            "预言家行动",
+                            human_name,
+                            speech=f"我查验了 {_seat_name(target)}。",
+                            behavior="闭眼感知命运的回响",
+                            thought=None,
+                            scope=HUMAN_ONLY_SCOPE,
+                        )
+                        logger.log_action("预言家查验", f"查验 {target}, 结果: {result}", scope=HUMAN_ONLY_SCOPE)
                         _emit_human_state(event_sink, players, human)
                         await _emit_overlay("查验结果", f"{_seat_name(target)} 是{result}", 2200)
             else:
@@ -568,12 +694,21 @@ async def werewolves_game_with_human(
                         "moderator": moderator,
                         "name_to_role": players.name_to_role,
                         "context": _format_impression_context(seer.name, players, vote_history, round_public_records, round_num, "预言家行动"),
+                        "human_name": human_name,
+                        "soften_human_bias": round_num == 1,
                     }
-                    logger.log_agent_typing(seer.name, "预言家行动")
-                    result = await seer.night_action(game_state)
-                    logger.log_message_detail("预言家行动", seer.name, speech=result.get("speech"), behavior=result.get("behavior"), thought=result.get("thought"))
+                    logger.log_agent_typing(seer.name, "预言家行动", scope=HIDDEN_SCOPE)
+                    result = await _safe_call(f"{seer.name} seer_action", seer.night_action, game_state, default={}) or {}
+                    logger.log_message_detail(
+                        "预言家行动",
+                        seer.name,
+                        speech=result.get("speech"),
+                        behavior=result.get("behavior"),
+                        thought=result.get("thought"),
+                        scope=HIDDEN_SCOPE,
+                    )
                     if result and result.get("action") == "check":
-                        logger.log_action("预言家查验", f"查验 {result.get('target')}, 结果: {result.get('result')}")
+                        logger.log_action("预言家查验", f"查验 {result.get('target')}, 结果: {result.get('result')}", scope=HIDDEN_SCOPE)
 
             logger.start_day()
             dead_tonight: list[str] = []
@@ -593,11 +728,18 @@ async def werewolves_game_with_human(
                     stop_event=stop_event,
                 )
                 shot_target = str(shot_reply.get("choice") or "").strip()
-                logger.log_message_detail("猎人开枪", human_name, speech="我已作出是否开枪的决定。", behavior="举起枪口", thought=None)
+                logger.log_message_detail(
+                    "猎人开枪",
+                    human_name,
+                    speech="我已作出是否开枪的决定。",
+                    behavior="举起枪口",
+                    thought=None,
+                    scope=HUMAN_ONLY_SCOPE,
+                )
                 if shot_target:
                     human.has_shot = False
                     night_hunter_shots.append(shot_target)
-                    logger.log_action("猎人开枪", f"猎人 {human_name} 开枪击杀了 {shot_target}")
+                    logger.log_action("猎人开枪", f"猎人 {human_name} 开枪击杀了 {shot_target}", scope=HUMAN_ONLY_SCOPE)
             else:
                 for hunter in players.hunter:
                     if hunter.name == human_name:
@@ -606,14 +748,21 @@ async def werewolves_game_with_human(
                         alive_for_hunter = [p for p in players.current_alive if p.name not in dead_tonight]
                         if alive_for_hunter:
                             context = _format_impression_context(hunter.name, players, vote_history, round_public_records, round_num, "猎人开枪")
-                            logger.log_agent_typing(hunter.name, "猎人开枪")
+                            logger.log_agent_typing(hunter.name, "猎人开枪", scope=HIDDEN_SCOPE)
                             shoot_res = await hunter.shoot(alive_for_hunter, moderator, context)
                             if shoot_res:
-                                logger.log_message_detail("猎人开枪", hunter.name, speech=shoot_res.get("speech"), behavior=shoot_res.get("behavior"), thought=shoot_res.get("thought"))
+                                logger.log_message_detail(
+                                    "猎人开枪",
+                                    hunter.name,
+                                    speech=shoot_res.get("speech"),
+                                    behavior=shoot_res.get("behavior"),
+                                    thought=shoot_res.get("thought"),
+                                    scope=HIDDEN_SCOPE,
+                                )
                                 target = shoot_res.get("target") if shoot_res.get("shoot") else None
                                 if target:
                                     night_hunter_shots.append(target)
-                                    logger.log_action("猎人开枪", f"猎人 {hunter.name} 开枪击杀了 {target}")
+                                    logger.log_action("猎人开枪", f"猎人 {hunter.name} 开枪击杀了 {target}", scope=HIDDEN_SCOPE)
 
             for target in night_hunter_shots:
                 if target and target not in dead_tonight:
@@ -653,11 +802,19 @@ async def werewolves_game_with_human(
                         role_obj = players.name_to_role_obj[dead_name]
                         context = _format_impression_context(dead_name, players, vote_history, round_public_records, round_num, "遗言")
                         logger.log_agent_typing(dead_name, "遗言")
-                        last_msg = await role_obj.leave_last_words(_attach_context(await moderator(Prompts.to_dead_player.format(dead_name)), context))
+                        last_msg = await _safe_call(
+                            f"{dead_name} leave_last_words",
+                            role_obj.leave_last_words,
+                            _attach_context(await moderator(Prompts.to_dead_player.format(dead_name)), context),
+                            default=None,
+                        )
+                        if last_msg is None:
+                            continue
                         speech, behavior, thought, content_raw = _extract_msg_fields(last_msg)
-                        logger.log_message_detail("遗言", dead_name, speech=speech or content_raw, behavior=behavior, thought=thought)
-                        await _observe_ai(_alive_ai_roles(players), _public_msg(dead_name, speech or content_raw, behavior), exclude_names={dead_name})
-                        round_public_records.append({"player": dead_name, "speech": speech or content_raw, "behavior": behavior, "phase": "遗言"})
+                        public_speech = _safe_public_text(speech, behavior, content_raw)
+                        logger.log_message_detail("遗言", dead_name, speech=public_speech, behavior=behavior, thought=thought)
+                        await _observe_ai(_alive_ai_roles(players), _public_msg(dead_name, public_speech, behavior), exclude_names={dead_name})
+                        round_public_records.append({"player": dead_name, "speech": public_speech, "behavior": behavior, "phase": "遗言"})
 
             result = players.check_winning()
             if result:
@@ -691,11 +848,23 @@ async def werewolves_game_with_human(
 
                 context = _format_impression_context(role.name, players, vote_history, round_public_records, round_num, "白天讨论")
                 logger.log_agent_typing(role.name, "白天讨论")
-                msg = await role.day_discussion(_attach_context(await moderator(""), context))
+                msg = await _safe_call(
+                    f"{role.name} day_discussion",
+                    role.day_discussion,
+                    _attach_context(await moderator(""), context),
+                    default=None,
+                )
+                if msg is None:
+                    fallback_speech = "我先继续观察，暂时没有更多补充。"
+                    logger.log_message_detail("白天讨论", role.name, speech=fallback_speech, behavior="短暂沉默后谨慎发言", thought=None)
+                    round_public_records.append({"player": role.name, "speech": fallback_speech, "behavior": "短暂沉默后谨慎发言", "phase": "白天讨论"})
+                    await _observe_ai(_alive_ai_roles(players), _public_msg(role.name, fallback_speech, "短暂沉默后谨慎发言"), exclude_names={role.name})
+                    continue
                 speech, behavior, thought, content_raw = _extract_msg_fields(msg)
-                logger.log_message_detail("白天讨论", role.name, speech=speech or content_raw, behavior=behavior, thought=thought)
-                round_public_records.append({"player": role.name, "speech": speech or content_raw, "behavior": behavior, "phase": "白天讨论"})
-                await _observe_ai(_alive_ai_roles(players), _public_msg(role.name, speech or content_raw, behavior), exclude_names={role.name})
+                public_speech = _safe_public_text(speech, behavior, content_raw)
+                logger.log_message_detail("白天讨论", role.name, speech=public_speech, behavior=behavior, thought=thought)
+                round_public_records.append({"player": role.name, "speech": public_speech, "behavior": behavior, "phase": "白天讨论"})
+                await _observe_ai(_alive_ai_roles(players), _public_msg(role.name, public_speech, behavior), exclude_names={role.name})
 
             await _announce("现在进入放逐投票阶段，请所有存活玩家投票。")
             round_vote_records: list[dict[str, Any]] = []
@@ -725,15 +894,37 @@ async def werewolves_game_with_human(
 
                 context = _format_impression_context(role.name, players, vote_history, round_public_records, round_num, "白天投票")
                 logger.log_agent_typing(role.name, "投票")
-                msg = await role.vote(_attach_context(await moderator(Prompts.to_all_vote.format(names_to_str(players.current_alive))), context), players.current_alive)
+                shuffled_alive = _shuffle_candidates(
+                    [r.name for r in players.current_alive if r.name != role.name],
+                    human_name=human_name,
+                    soften_human_bias=(round_num == 1),
+                )
+                vote_alive_players = [players.name_to_role_obj[name] for name in shuffled_alive if name in players.name_to_role_obj]
+                msg = await _safe_call(
+                    f"{role.name} vote",
+                    role.vote,
+                    _attach_context(await moderator(Prompts.to_all_vote.format(names_to_str(players.current_alive))), context),
+                    vote_alive_players,
+                    default=None,
+                )
+                if msg is None:
+                    vote_value = random.choice(shuffled_alive) if shuffled_alive else None
+                    day_votes.append(vote_value)
+                    logger.log_message_detail("投票", role.name, speech="我投出了这一票。", behavior="在短暂思考后给出选择", thought=None, action=f"投票给 {vote_value}" if vote_value else "弃票")
+                    round_vote_records.append({"round": round_num, "phase": "白天投票", "voter": role.name, "target": vote_value})
+                    continue
                 speech, behavior, thought, content_raw = _extract_msg_fields(msg)
                 raw_vote = (getattr(msg, "metadata", {}) or {}).get("vote")
                 vote_value = None if is_abstain_vote(raw_vote) else str(raw_vote).strip()
+                valid_targets = {r.name for r in players.current_alive if r.name != role.name}
+                if vote_value not in valid_targets:
+                    vote_value = random.choice(list(valid_targets)) if valid_targets else None
                 day_votes.append(vote_value)
+                public_speech = _safe_public_text(speech, behavior, content_raw)
                 if vote_value:
-                    logger.log_vote(role.name, vote_value, "投票", speech=speech or content_raw, behavior=behavior, thought=thought)
+                    logger.log_vote(role.name, vote_value, "投票", speech=public_speech, behavior=behavior, thought=thought)
                 else:
-                    logger.log_message_detail("投票", role.name, speech=speech or content_raw, behavior=behavior, thought=thought, action="弃票")
+                    logger.log_message_detail("投票", role.name, speech=public_speech, behavior=behavior, thought=thought, action="弃票")
                 round_vote_records.append({"round": round_num, "phase": "白天投票", "voter": role.name, "target": vote_value})
 
             voted_player, votes_text, top_candidates = majority_vote(day_votes)
@@ -786,7 +977,14 @@ async def werewolves_game_with_human(
                     if voted_player == hunter.name:
                         context = _format_impression_context(hunter.name, players, vote_history, round_public_records, round_num, "猎人开枪")
                         logger.log_agent_typing(hunter.name, "猎人开枪")
-                        shoot_res = await hunter.shoot(players.current_alive, moderator, context)
+                        shoot_res = await _safe_call(
+                            f"{hunter.name} day_hunter_shoot",
+                            hunter.shoot,
+                            players.current_alive,
+                            moderator,
+                            context,
+                            default=None,
+                        )
                         if shoot_res:
                             logger.log_message_detail("猎人开枪", hunter.name, speech=shoot_res.get("speech"), behavior=shoot_res.get("behavior"), thought=shoot_res.get("thought"))
                             shot_player = shoot_res.get("target") if shoot_res.get("shoot") else None

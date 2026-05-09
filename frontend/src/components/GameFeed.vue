@@ -76,13 +76,13 @@
             </div>
             <div v-else style="display: flex; flex-direction: column; gap: 8px;">
               <div
-                v-if="m.thought"
+                v-if="hasVisibleThought(m)"
                 style="font-size: 13px; color: #6b7280; white-space: pre-wrap; line-height: 1.7; overflow-wrap: anywhere;"
               >
                 <span style="font-weight: 700; color: #9ca3af;">心声：</span>{{ m.thought }}
               </div>
               <div
-                v-if="m.behavior"
+                v-if="hasVisibleBehavior(m)"
                 :style="{
                   fontSize: '13px',
                   color: getMessageStyle(m).textColor,
@@ -94,7 +94,7 @@
                 <span style="font-weight: 700; color: #7c73e6;">表现：</span>{{ m.behavior }}
               </div>
               <div
-                v-if="m.speech"
+                v-if="hasVisibleSpeech(m)"
                 :style="{
                   fontSize: '13px',
                   color: getMessageStyle(m).textColor,
@@ -106,7 +106,7 @@
                 <span style="font-weight: 700; color: #5b52cc;">发言：</span>{{ m.speech }}
               </div>
               <div
-                v-if="!m.speech && m.content"
+                v-if="shouldShowStructuredFallback(m)"
                 :style="{
                   fontSize: '13px',
                   color: getMessageStyle(m).textColor,
@@ -130,6 +130,7 @@ import { computed, defineExpose, ref } from "vue";
 
 const props = defineProps({
   feed: { type: Array, default: () => [] },
+  hideThoughts: { type: Boolean, default: false },
 });
 
 const containerRef = ref(null);
@@ -200,6 +201,43 @@ const getMessageStyle = (m) => {
   return MESSAGE_STYLES.player;
 };
 
+const extractNamedField = (text, field) => {
+  const source = String(text || "");
+  if (!source) return "";
+
+  const quotedPatterns = [
+    new RegExp(`${field}\\s*:\\s*"((?:\\\\.|[^"])*)"`, "is"),
+    new RegExp(`${field}\\s*:\\s*'((?:\\\\.|[^'])*)'`, "is"),
+  ];
+  for (const pattern of quotedPatterns) {
+    const match = source.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+
+  const blockPattern = new RegExp(`${field}\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*(?:speech|behavior|thought)\\s*:|$)`, "i");
+  const match = source.match(blockPattern);
+  return match?.[1]?.trim() || "";
+};
+
+const sanitizeDisplayText = (text, field = "") => {
+  let value = String(text || "");
+  if (!value) return "";
+
+  value = value.replace(/<history>[\s\S]*?<\/history>/gi, " ");
+  value = value.replace(/<think>[\s\S]*?<\/think>/gi, " ");
+  value = value.replace(/<\/?(history|think)>/gi, " ");
+
+  if (field) {
+    const extracted = extractNamedField(value, field);
+    if (extracted) value = extracted;
+  }
+
+  value = value.replace(/^\s*(speech|behavior|thought)\s*:\s*/gim, "");
+  value = value.replace(/^[\"']+|[\"']+$/g, "");
+  value = value.replace(/\n{3,}/g, "\n\n");
+  return value.trim();
+};
+
 const normalizeFeedToMessages = (feed) => {
   const out = [];
   for (const item of feed || []) {
@@ -212,11 +250,11 @@ const normalizeFeedToMessages = (feed) => {
           timestamp: msg.timestamp,
           agent: msg.agent,
           role: msg.role,
-          content: msg.content,
+          content: sanitizeDisplayText(msg.content),
           agentId: msg.agentId,
-          thought: msg.thought,
-          behavior: msg.behavior,
-          speech: msg.speech,
+          thought: sanitizeDisplayText(msg.thought, "thought"),
+          behavior: sanitizeDisplayText(msg.behavior, "behavior"),
+          speech: sanitizeDisplayText(msg.speech, "speech"),
           category: msg.category,
           action: msg.action,
         });
@@ -230,11 +268,11 @@ const normalizeFeedToMessages = (feed) => {
         timestamp: item.data.timestamp,
         agent: item.data.agent,
         role: item.data.role,
-        content: item.data.content,
+        content: sanitizeDisplayText(item.data.content),
         agentId: item.data.agentId,
-        thought: item.data.thought,
-        behavior: item.data.behavior,
-        speech: item.data.speech,
+        thought: sanitizeDisplayText(item.data.thought, "thought"),
+        behavior: sanitizeDisplayText(item.data.behavior, "behavior"),
+        speech: sanitizeDisplayText(item.data.speech, "speech"),
         category: item.data.category,
         action: item.data.action,
       });
@@ -247,7 +285,7 @@ const normalizeFeedToMessages = (feed) => {
         timestamp: item.data.timestamp,
         agent: item.data.agent,
         role: "记忆",
-        content: item.data.content,
+        content: sanitizeDisplayText(item.data.content),
         agentId: item.data.agentId,
       });
     }
@@ -258,11 +296,22 @@ const normalizeFeedToMessages = (feed) => {
 const messages = computed(() => normalizeFeedToMessages(props.feed));
 
 const hasStructured = (m) => {
-  const thought = String(m.thought || "").trim();
+  const thought = props.hideThoughts ? "" : String(m.thought || "").trim();
   const behavior = String(m.behavior || "").trim();
   const speech = String(m.speech || "").trim();
   return Boolean(thought || behavior || speech);
 };
+
+const hasVisibleThought = (m) => !props.hideThoughts && Boolean(String(m.thought || "").trim());
+const hasVisibleBehavior = (m) => Boolean(String(m.behavior || "").trim());
+const hasVisibleSpeech = (m) => Boolean(String(m.speech || "").trim());
+const shouldShowStructuredFallback = (m) => (
+  hasStructured(m) &&
+  !hasVisibleThought(m) &&
+  !hasVisibleBehavior(m) &&
+  !hasVisibleSpeech(m) &&
+  Boolean(String(m.content || "").trim())
+);
 
 const isSystemMessage = (m) => m.agent === "System" || m.role === "System";
 

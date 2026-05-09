@@ -132,7 +132,13 @@ const loginSparks = [
 
 const extractBubbleText = (content) => {
   const text = String(content || "");
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  return text
+    .replace(/<history>[\s\S]*?<\/history>/gi, " ")
+    .replace(/<think>[\s\S]*?<\/think>/gi, " ")
+    .replace(/<\/?(history|think)>/gi, " ")
+    .replace(/^\s*(speech|behavior|thought)\s*:\s*/gim, "")
+    .replace(/^[\"']+|[\"']+$/g, "")
+    .trim();
 };
 
 const authenticatedUser = ref(window.localStorage.getItem(AUTH_STORAGE_KEY) || "");

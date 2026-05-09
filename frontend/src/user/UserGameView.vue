@@ -56,9 +56,9 @@
               </div>
               <div class="seat-card__name">{{ agent.name }}</div>
               <div class="seat-card__meta">
-                {{ agent.id === "player_1" ? humanRoleDisplay : (agent.revealedRole || "未知身份") }}
+                {{ displayRoleLabel(agent) }}
               </div>
-              <div v-if="bubbleFor(agent.id)" class="seat-card__bubble">
+              <div v-if="shouldShowCardBubble(agent.id) && bubbleFor(agent.id)" class="seat-card__bubble">
                 {{ bubbleFor(agent.id).text }}
               </div>
             </button>
@@ -71,11 +71,14 @@
             <div class="overlay-card__title">{{ overlay.title }}</div>
             <div class="overlay-card__content">{{ overlay.content }}</div>
           </div>
+          <div v-if="shouldShowNightPrompt" class="user-room__night-prompt">
+            {{ nightPrompt.text }}
+          </div>
         </div>
       </div>
 
       <div class="user-feed">
-        <GameFeed :feed="feed" />
+        <GameFeed :feed="feed" :hide-thoughts="true" />
       </div>
     </div>
 
@@ -155,12 +158,14 @@ const exportingExperience = ref(false);
 const humanState = ref(null);
 const overlay = ref({ visible: false, title: "", content: "" });
 const nightBlindVisible = ref(false);
+const nightPrompt = ref({ text: "", timestamp: 0 });
 const bubbles = ref({});
 const bubbleTimersRef = ref({});
 const clientRef = ref(null);
 let statusTimer = null;
 let pendingTimer = null;
 let overlayTimer = null;
+let nightPromptTimer = null;
 
 const getAgentById = (agentId) => agents.value.find((item) => item.id === agentId) || null;
 const { feed, processHistoricalFeed, processFeedEvent, addSystemMessage, resetFeed } = useFeedProcessor({ getAgentById });
@@ -174,15 +179,7 @@ const statusText = computed(() => {
 const phaseClass = computed(() => (String(phaseText.value).includes("夜") ? "is-night" : "is-day"));
 const isGameRunning = computed(() => String(gameStatus.value?.status || "").toLowerCase() === "running");
 const humanRoleDisplay = computed(() => humanState.value?.roleDisplay || "未知");
-
-const roleMetaFromRole = (role) => {
-  const raw = String(role || "").toLowerCase();
-  if (raw.includes("狼人") || raw.includes("werewolf")) return { avatar: ASSETS.avatars.werewolf, alignment: "werewolves" };
-  if (raw.includes("预言家") || raw.includes("seer")) return { avatar: ASSETS.avatars.seer, alignment: "villagers" };
-  if (raw.includes("女巫") || raw.includes("witch")) return { avatar: ASSETS.avatars.witch, alignment: "villagers" };
-  if (raw.includes("猎人") || raw.includes("hunter")) return { avatar: ASSETS.avatars.hunter, alignment: "villagers" };
-  return { avatar: ASSETS.avatars.villager, alignment: "villagers" };
-};
+const shouldShowNightPrompt = computed(() => phaseClass.value === "is-night" && !nightBlindVisible.value && Boolean(nightPrompt.value.text));
 
 const mapPlayerNameToAgentId = (name) => {
   const text = String(name || "");
@@ -192,6 +189,32 @@ const mapPlayerNameToAgentId = (name) => {
 };
 
 const bubbleFor = (id) => bubbles.value[id] || null;
+const shouldShowCardBubble = () => phaseClass.value !== "is-night";
+
+const displayRoleLabel = (agent) => {
+  if (!agent) return "未知身份";
+  if (agent.id === "player_1") return humanRoleDisplay.value;
+  if (agent.knownAlignment) return agent.knownAlignment;
+  return agent.revealedRole || "未知身份";
+};
+
+const setNightPrompt = (text, durationMs = 3000) => {
+  const value = String(text || "").trim();
+  if (!value) return;
+  nightPrompt.value = { text: value, timestamp: Date.now() };
+  if (nightPromptTimer) clearTimeout(nightPromptTimer);
+  nightPromptTimer = setTimeout(() => {
+    nightPrompt.value = { text: "", timestamp: 0 };
+  }, durationMs);
+};
+
+const canDisplayScopedEvent = (evt) => {
+  const scope = String(evt?.scope || "public");
+  if (scope === "hidden") return false;
+  if (scope === "human_only") return true;
+  if (scope === "wolves_only") return humanRoleDisplay.value === "狼人";
+  return true;
+};
 
 const showOverlay = (title, content, durationMs = 2000) => {
   overlay.value = { visible: true, title, content };
@@ -208,16 +231,16 @@ const applyPlayersInit = (players) => {
     const agentId = mapPlayerNameToAgentId(player?.name);
     if (!agentId) continue;
     const base = byId.get(agentId) || { id: agentId, name: agentId };
-    const meta = roleMetaFromRole(player?.role);
+    const visibleRole = player?.role || "未知身份";
     byId.set(agentId, {
       ...base,
       id: agentId,
       name: `${Number(agentId.replace("player_", ""))}号`,
-      revealedRole: agentId === "player_1" ? (humanState.value?.roleDisplay || "未知身份") : "未知身份",
-      role: player?.role || "未知",
-      avatar: base.customAvatar || meta.avatar || base.avatar,
+      revealedRole: agentId === "player_1" ? (humanState.value?.roleDisplay || "未知身份") : visibleRole,
+      role: visibleRole,
+      avatar: agentId === "player_1" ? (base.customAvatar || base.avatar || ASSETS.avatars.villager) : ASSETS.avatars.villager,
       alive: player?.alive !== false,
-      alignment: meta.alignment,
+      alignment: player?.alignment || base.alignment || "unknown",
       wolfmate: false,
       knownAlignment: "",
     });
@@ -233,18 +256,21 @@ const applyHumanState = (payload) => {
   const wolfTeammates = new Set(humanState.value?.wolfTeammates || []);
   agents.value = agents.value.map((agent) => {
     const playerInfo = players.find((item) => mapPlayerNameToAgentId(item.name) === agent.id);
-    const rawRole = playerInfo?.role || "";
-    const meta = roleMetaFromRole(rawRole);
     const seatName = playerInfo?.name || `Player${agent.id.replace("player_", "")}`;
     const knownAlignment = knownMap.get(seatName) || "";
     const isHuman = agent.id === "player_1";
+    const isWolfmate = wolfTeammates.has(seatName);
+    const visibleRole = isHuman
+      ? (humanState.value?.roleDisplay || "未知身份")
+      : (knownAlignment || playerInfo?.role || (isWolfmate ? "狼人" : "未知身份"));
     return {
       ...agent,
-      role: rawRole || agent.role,
-      revealedRole: isHuman ? (humanState.value?.roleDisplay || "未知身份") : "未知身份",
-      avatar: agent.customAvatar || (isHuman ? agent.avatar : meta.avatar),
+      role: visibleRole,
+      revealedRole: visibleRole,
+      avatar: isHuman ? (agent.customAvatar || agent.avatar || ASSETS.avatars.villager) : ASSETS.avatars.villager,
       alive: playerInfo?.alive !== false,
-      wolfmate: wolfTeammates.has(seatName),
+      alignment: isHuman ? (humanState.value?.alignment || agent.alignment || "unknown") : (playerInfo?.alignment || agent.alignment || "unknown"),
+      wolfmate: isWolfmate,
       knownAlignment,
     };
   });
@@ -258,7 +284,13 @@ const markPlayersDead = (deadPlayerNames) => {
   ));
 };
 
-const extractBubbleText = (content) => String(content || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+const extractBubbleText = (content) => String(content || "")
+  .replace(/<history>[\s\S]*?<\/history>/gi, " ")
+  .replace(/<think>[\s\S]*?<\/think>/gi, " ")
+  .replace(/<\/?(history|think)>/gi, " ")
+  .replace(/^\s*(speech|behavior|thought)\s*:\s*/gim, "")
+  .replace(/^[\"']+|[\"']+$/g, "")
+  .trim();
 
 const upsertBubbleFromMessage = (evt) => {
   if (!evt?.agentId) return;
@@ -267,6 +299,10 @@ const upsertBubbleFromMessage = (evt) => {
   const text = [behaviorText ? `(表现) ${extractBubbleText(behaviorText)}` : "", speechText ? `(发言) ${extractBubbleText(speechText)}` : ""]
     .filter(Boolean)
     .join("\n");
+  if (phaseClass.value === "is-night") {
+    setNightPrompt(text || extractBubbleText(evt.content || ""), BUBBLE_LIFETIME_MS);
+    return;
+  }
   bubbles.value = {
     ...bubbles.value,
     [evt.agentId]: {
@@ -286,6 +322,10 @@ const upsertBubbleFromMessage = (evt) => {
 
 const handleAgentTyping = (evt) => {
   if (!evt?.agentId) return;
+  if (phaseClass.value === "is-night") {
+    setNightPrompt(evt.categoryDisplay || "夜间行动中…", TYPING_LIFETIME_MS);
+    return;
+  }
   bubbles.value = {
     ...bubbles.value,
     [evt.agentId]: {
@@ -311,6 +351,7 @@ const resetRuntimeState = () => {
   humanState.value = null;
   overlay.value = { visible: false, title: "", content: "" };
   nightBlindVisible.value = false;
+  nightPrompt.value = { text: "", timestamp: 0 };
   pendingAction.value = null;
   actionText.value = "";
   actionChoice.value = "";
@@ -359,8 +400,15 @@ const startRealtime = () => {
     if (evt.type === "system" && String(evt.content || "").toLowerCase().includes("try to connect")) {
       connectionStatus.value = "disconnected";
     }
-    if (evt.type === "day_start") phaseText.value = "白天";
-    if (evt.type === "night_start") phaseText.value = "夜晚";
+    if (evt.type === "day_start") {
+      phaseText.value = "白天";
+      nightBlindVisible.value = false;
+      nightPrompt.value = { text: "", timestamp: 0 };
+    }
+    if (evt.type === "night_start") {
+      phaseText.value = "夜晚";
+      nightPrompt.value = { text: "", timestamp: 0 };
+    }
     if (evt.type === "overlay") showOverlay(evt.title || "提示", evt.content || "", evt.durationMs || 2000);
     if (evt.type === "human_role_reveal") showOverlay("你的身份", `你的身份是${evt.roleDisplay}`, evt.durationMs || 3000);
     if (evt.type === "human_role_state") applyHumanState(evt);
@@ -388,7 +436,14 @@ const startRealtime = () => {
       }
       const playersInit = history.find((item) => item.type === "system" && Array.isArray(item.players));
       if (playersInit?.players) applyPlayersInit(playersInit.players);
-      processHistoricalFeed(evt.events.filter((item) => item.scope !== "wolves_only"));
+      processHistoricalFeed(evt.events.filter((item) => canDisplayScopedEvent(item)));
+      return;
+    }
+
+    if (!canDisplayScopedEvent(evt)) {
+      if (evt.scope === "wolves_only" && (evt.type === "agent_message" || evt.type === "agent_typing" || evt.type === "system")) {
+        nightBlindVisible.value = String(phaseText.value).includes("夜");
+      }
       return;
     }
 
@@ -422,6 +477,8 @@ const stopRealtime = () => {
   }
   Object.values(bubbleTimersRef.value).forEach((timer) => clearTimeout(timer));
   bubbleTimersRef.value = {};
+  if (nightPromptTimer) clearTimeout(nightPromptTimer);
+  nightPromptTimer = null;
 };
 
 const pickAvatar = () => avatarInputRef.value?.click();
@@ -757,6 +814,23 @@ onBeforeUnmount(() => {
   text-align: center;
   font-size: 20px;
   line-height: 1.8;
+}
+
+.user-room__night-prompt {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 24px;
+  z-index: 19;
+  padding: 14px 18px;
+  border-radius: 18px;
+  background: rgba(2, 6, 23, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  color: #f8fafc;
+  text-align: center;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.32);
 }
 
 .night-blind {

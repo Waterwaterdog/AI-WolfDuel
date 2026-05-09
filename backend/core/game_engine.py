@@ -136,6 +136,51 @@ def _strip_dsml_payload(text: str, field: str | None = None) -> str:
     return text.strip()
 
 
+def _extract_labeled_field(text: str, field: str) -> str:
+    """从混杂文本中尽量提取 speech/behavior/thought 字段。"""
+    if not text:
+        return ""
+
+    quoted_patterns = [
+        rf'(?is)\b{re.escape(field)}\b\s*:\s*"((?:\\.|[^"])*)"',
+        rf"(?is)\b{re.escape(field)}\b\s*:\s*'((?:\\.|[^'])*)'",
+    ]
+    for pattern in quoted_patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+
+    block_pattern = re.compile(
+        rf"(?is)\b{re.escape(field)}\b\s*:\s*(.+?)(?=\n\s*(?:speech|behavior|thought)\s*:|\Z)"
+    )
+    match = block_pattern.search(text)
+    if match:
+        return match.group(1).strip()
+
+    return ""
+
+
+def _sanitize_model_text(text: str, field: str | None = None) -> str:
+    """清洗模型输出中的历史残留、标签和包裹格式。"""
+    if not text:
+        return ""
+
+    text = _strip_dsml_payload(text, field)
+    text = re.sub(r"(?is)<history>.*?</history>", " ", text)
+    text = re.sub(r"(?is)<think>.*?</think>", " ", text)
+    text = re.sub(r"(?is)</?(history|think)>", " ", text)
+
+    if field:
+        extracted = _extract_labeled_field(text, field)
+        if extracted:
+            text = extracted
+
+    text = re.sub(r"(?im)^\s*(speech|behavior|thought)\s*:\s*", "", text)
+    text = re.sub(r"^[\"']+|[\"']+$", "", text.strip())
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _extract_msg_fields(msg: Msg) -> tuple[str, str, str, str]:
     """从消息中提取 speech/behavior/thought 及原始内容。"""
     md = getattr(msg, "metadata", {}) or {}
@@ -159,7 +204,7 @@ def _extract_msg_fields(msg: Msg) -> tuple[str, str, str, str]:
         elif isinstance(val, dict) and "text" in val:
             val = val.get("text", "")
         val = str(val).strip()
-        val = _strip_dsml_payload(val, field)
+        val = _sanitize_model_text(val, field)
         # 去除 generate_response("...") 包裹，即使前后有前缀/空格
         match = re.search(
             r"generate_response\(\s*[\"']?(.*?)[\"']?\s*\)\s*$", val)
@@ -170,12 +215,24 @@ def _extract_msg_fields(msg: Msg) -> tuple[str, str, str, str]:
                 r"generate_response\(\s*[\"']?(.*?)[\"']?\s*\)", val)
             if inline:
                 val = inline.group(1)
-        return val
+        return _sanitize_model_text(val, field)
 
     speech_s = _clean_text(speech, "speech")
     behavior_s = _clean_text(behavior, "behavior")
     thought_s = _clean_text(thought, "thought")
     content_s = _clean_text(getattr(msg, "content", ""))
+
+    if not speech_s:
+        speech_s = _sanitize_model_text(_extract_labeled_field(content_s, "speech"), "speech")
+    if not behavior_s:
+        behavior_s = _sanitize_model_text(_extract_labeled_field(content_s, "behavior"), "behavior")
+    if not thought_s:
+        thought_s = _sanitize_model_text(_extract_labeled_field(content_s, "thought"), "thought")
+
+    # 若 content 本身是结构化回显，则不要把整段脏文本继续作为公开发言兜底。
+    if any(token in content_s.lower() for token in ("<history", "speech:", "behavior:", "thought:")):
+        content_s = speech_s or behavior_s or ""
+
     return speech_s, behavior_s, thought_s, content_s
 
 

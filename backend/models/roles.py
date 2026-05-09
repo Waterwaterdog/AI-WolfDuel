@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """角色类定义模块 - 每个角色都有独立的行为逻辑"""
+import random
 from typing import Optional, List
 from abc import ABC, abstractmethod
 
@@ -99,6 +100,17 @@ class BaseRole(ABC):
         )
 
 
+def _shuffle_role_candidates(players: list, *, owner_name: str = "", human_name: str | None = None, soften_human_bias: bool = False) -> list:
+    """打乱 AI 可选目标顺序，降低固定瞄准首位候选的偏置。"""
+    candidates = [player for player in players if getattr(player, "name", None) and getattr(player, "name", None) != owner_name]
+    random.shuffle(candidates)
+    if soften_human_bias and human_name:
+        others = [player for player in candidates if getattr(player, "name", None) != human_name]
+        humans = [player for player in candidates if getattr(player, "name", None) == human_name]
+        candidates = others + humans
+    return candidates
+
+
 class Werewolf(BaseRole):
     """狼人角色"""
 
@@ -129,6 +141,7 @@ class Werewolf(BaseRole):
         if context:
             prompt = Msg(
                 prompt.name, f"{prompt.content}\n\n{context}", role=prompt.role)
+        alive_players = _shuffle_role_candidates(alive_players, owner_name=self.name)
         return await self.agent(
             prompt,
             structured_model=get_vote_model(
@@ -157,7 +170,12 @@ class Seer(BaseRole):
 
     async def night_action(self, game_state: dict) -> dict:
         """预言家夜晚查验"""
-        alive_players = game_state.get("alive_players", [])
+        alive_players = _shuffle_role_candidates(
+            game_state.get("alive_players", []),
+            owner_name=self.name,
+            human_name=game_state.get("human_name"),
+            soften_human_bias=bool(game_state.get("soften_human_bias")),
+        )
         moderator = game_state.get("moderator")
         context = game_state.get("context")
 
@@ -221,16 +239,19 @@ class Witch(BaseRole):
     async def night_action(self, game_state: dict) -> dict:
         """女巫夜晚行动"""
         killed_player = game_state.get("killed_player")
-        alive_players = game_state.get("alive_players", [])
+        alive_players = _shuffle_role_candidates(
+            game_state.get("alive_players", []),
+            owner_name=self.name,
+            human_name=game_state.get("human_name"),
+            soften_human_bias=bool(game_state.get("soften_human_bias")),
+        )
         moderator = game_state.get("moderator")
         context = game_state.get("context")
 
         result = {}
 
         # 女巫毒药不能对已被狼人击杀的目标再次使用
-        poison_candidates = [
-            player for player in alive_players if player.name != killed_player
-        ]
+        poison_candidates = [player for player in alive_players if player.name != killed_player]
 
         # 解药环节
         if self.has_healing and killed_player and killed_player != self.name:
@@ -301,6 +322,7 @@ class Hunter(BaseRole):
         """猎人开枪带走一人，返回包含目标与思考的字典。"""
         if not self.has_shot:
             return None
+        alive_players = _shuffle_role_candidates(alive_players, owner_name=self.name)
 
         prompt = await moderator(
             f"[{self.name} ONLY] {self.name}，你是猎人，即将死亡。"
