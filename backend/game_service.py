@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from agentscope.agent import ReActAgent
 
 from config import config
+from core.human_game import werewolves_game_with_human
 from core.knowledge_base import PlayerKnowledgeStore
 from core.game_engine import werewolves_game
 
@@ -31,22 +32,26 @@ def _model_label(provider: str, cfg: dict[str, str] | None) -> str:
     return provider
 
 
-def create_players() -> tuple[list[ReActAgent], dict[str, str]]:
-    """创建 9 名玩家并返回 (agents, player_model_map)。"""
+def create_players(*, include_human_player: bool = False) -> tuple[list[ReActAgent], dict[str, str]]:
+    """创建玩家并返回 (agents, player_model_map)。"""
 
     model_overrides = (
         config.openai_player_configs if config.model_provider == "openai" else [
             None] * 9
     )
-
+    start_idx = 1 if include_human_player else 0
+    end_idx = 9
     agents = [
-        get_official_agents(f"Player{idx + 1}", model_overrides[idx]) for idx in range(9)
+        get_official_agents(f"Player{idx + 1}", model_overrides[idx])
+        for idx in range(start_idx, end_idx)
     ]
 
     player_model_map = {
-        player.name: _model_label(config.model_provider, model_overrides[idx])
-        for idx, player in enumerate(agents)
+        player.name: _model_label(config.model_provider, model_overrides[int(player.name[6:]) - 1])
+        for player in agents
     }
+    if include_human_player:
+        player_model_map["Player1"] = "human"
 
     return agents, player_model_map
 
@@ -63,23 +68,35 @@ def create_knowledge_store(player_model_map: dict[str, str]) -> PlayerKnowledgeS
     return store
 
 
-async def run_game_session(*, game_id: str, event_sink=None, stop_event=None) -> tuple[str, str]:
+async def run_game_session(*, game_id: str, mode: str = "admin", event_sink=None, stop_event=None, human_broker=None) -> tuple[str, str]:
     """运行完整的一局游戏并返回 (log_path, experience_path)。"""
 
     is_valid, error_msg = config.validate()
     if not is_valid:
         raise RuntimeError(f"配置错误: {error_msg}")
 
-    agents, player_model_map = create_players()
+    user_mode = str(mode or "admin").lower() == "user"
+    agents, player_model_map = create_players(include_human_player=user_mode)
     knowledge_store = create_knowledge_store(player_model_map)
 
-    log_path, experience_path = await werewolves_game(
-        agents,
-        knowledge_store=knowledge_store,
-        player_model_map=player_model_map,
-        game_id=game_id,
-        event_sink=event_sink,
-        stop_event=stop_event,
-    )
+    if user_mode:
+        log_path, experience_path = await werewolves_game_with_human(
+            agents,
+            knowledge_store=knowledge_store,
+            player_model_map=player_model_map,
+            game_id=game_id,
+            event_sink=event_sink,
+            stop_event=stop_event,
+            human_broker=human_broker,
+        )
+    else:
+        log_path, experience_path = await werewolves_game(
+            agents,
+            knowledge_store=knowledge_store,
+            player_model_map=player_model_map,
+            game_id=game_id,
+            event_sink=event_sink,
+            stop_event=stop_event,
+        )
 
     return log_path, experience_path

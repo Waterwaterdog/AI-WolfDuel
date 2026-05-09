@@ -17,6 +17,8 @@ class GameLogger:
         game_id: str,
         log_dir: Optional[str] = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        reveal_private_thoughts: bool = True,
+        reveal_roles_in_events: bool = True,
     ):
         """初始化日志记录器
 
@@ -32,6 +34,8 @@ class GameLogger:
         self.start_time = datetime.now()
         self.closed = False  # 是否已关闭（避免重复 close）
         self._event_sink = event_sink
+        self._reveal_private_thoughts = reveal_private_thoughts
+        self._reveal_roles_in_events = reveal_roles_in_events
 
         # 确保日志目录存在
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +95,7 @@ class GameLogger:
                 "players": [
                     {
                         "name": name,
-                        "role": role,
+                        "role": role if self._reveal_roles_in_events else "未知",
                         "model": (model_map.get(name) if model_map else None),
                     }
                     for name, role in players_info
@@ -163,6 +167,7 @@ class GameLogger:
         behavior: Optional[str] = None,
         thought: Optional[str] = None,
         action: Optional[str] = None,
+        scope: str = "public",
     ):
         """记录包含思考/行为/发言/动作的消息。"""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -185,7 +190,7 @@ class GameLogger:
 
         # 将结构化条目推送给前端
         content_lines: list[str] = []
-        if thought:
+        if thought and self._reveal_private_thoughts:
             content_lines.append(f"(心声) {thought}")
         if behavior:
             content_lines.append(f"(表现) {behavior}")
@@ -200,14 +205,15 @@ class GameLogger:
                 "categoryDisplay": cat_display,
                 "agentName": player_name,
                 "action": action,
-                "thought": thought or "",
+                "scope": scope,
+                "thought": (thought or "") if self._reveal_private_thoughts else "",
                 "behavior": behavior or "",
                 "speech": speech or "",
                 "content": content or (speech or ""),
             }
         )
 
-    def log_agent_typing(self, player_name: str, category: str):
+    def log_agent_typing(self, player_name: str, category: str, scope: str = "public"):
         """推送玩家正在思考/发言的状态。"""
         self._emit(
             {
@@ -215,6 +221,7 @@ class GameLogger:
                 "agentId": player_name,
                 "agentName": player_name,
                 "category": category,
+                "scope": scope,
                 "categoryDisplay": self._get_category_display(category),
             }
         )
@@ -239,7 +246,8 @@ class GameLogger:
         vote_type: str = "投票",
         speech: Optional[str] = None,
         behavior: Optional[str] = None,
-        thought: Optional[str] = None
+        thought: Optional[str] = None,
+        scope: str = "public",
     ):
         """记录投票信息（支持详细信息）"""
         action = f"投票给 {target}"
@@ -249,12 +257,20 @@ class GameLogger:
             speech=speech,
             behavior=behavior,
             thought=thought,
-            action=action
+            action=action,
+            scope=scope,
         )
 
         # log_message_detail 已经会推送结构化事件
 
-    def log_vote_result(self, result: str, votes_detail: str, vote_type: str = "投票结果", action: str = "被选中击杀"):
+    def log_vote_result(
+        self,
+        result: str,
+        votes_detail: str,
+        vote_type: str = "投票结果",
+        action: str = "被选中击杀",
+        scope: str = "public",
+    ):
         """记录投票结果"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         cat_display = self._get_category_display(vote_type)
@@ -270,11 +286,12 @@ class GameLogger:
                 "type": "system",
                 "category": vote_type,
                 "categoryDisplay": cat_display,
+                "scope": scope,
                 "content": f"{cat_display} {result} {action} ({votes_detail})",
             }
         )
 
-    def log_action(self, action_type: str, content: str):
+    def log_action(self, action_type: str, content: str, scope: str = "public"):
         """记录特殊行动（简略版，用于纯动作记录）"""
         # 如果需要详细版，应使用 log_message_detail 并传入 action
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -287,6 +304,7 @@ class GameLogger:
                 "type": "system",
                 "category": action_type,
                 "categoryDisplay": cat_display,
+                "scope": scope,
                 "content": f"{cat_display} {content}",
             }
         )
@@ -377,6 +395,7 @@ class GameLogger:
                 "type": "memory",
                 "agentName": player_name,
                 "content": f"(思考) {thought}\n\n(印象)\n{impression_text}",
+                "thought": thought if self._reveal_private_thoughts else "",
             }
         )
 

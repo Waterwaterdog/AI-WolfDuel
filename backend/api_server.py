@@ -112,6 +112,7 @@ class EventBus:
 @dataclass
 class GameRuntime:
     status: str = "idle"  # idle|running|error（空闲|运行中|异常）
+    mode: str = "admin"
     game_id: str | None = None
     # 游戏在独立线程内运行，避免阻塞 FastAPI 主事件循环
     thread: threading.Thread | None = None
@@ -121,13 +122,19 @@ class GameRuntime:
     log_path: str | None = None
     experience_path: str | None = None
     last_error: str | None = None
+    human_broker: Any | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class StartGameRequest(BaseModel):
+    mode: str = "admin"
 
 
 class StartGameResponse(BaseModel):
     gameId: str
     status: str
     wsUrl: str
+    mode: str
 
 
 class StopGameResponse(BaseModel):
@@ -138,6 +145,7 @@ class StopGameResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     status: str
+    mode: str = "admin"
     gameId: str | None = None
     logPath: str | None = None
     experiencePath: str | None = None
@@ -154,6 +162,91 @@ class PlayersInsightsResponse(BaseModel):
     logSource: str | None = None
     experienceSource: str | None = None
     players: dict[str, PlayerInsight] = {}
+
+
+class HumanPendingResponse(BaseModel):
+    pending: dict[str, Any] | None = None
+
+
+class HumanSubmitRequest(BaseModel):
+    actionId: str
+    choice: str | None = None
+    text: str | None = None
+
+
+class HumanInputBroker:
+    def __init__(self, event_sink) -> None:
+        self._event_sink = event_sink
+        self._lock = threading.Lock()
+        self._pending: dict[str, Any] | None = None
+        self._responses: dict[str, dict[str, Any]] = {}
+        self._counter = 0
+
+    def _publish(self, event: dict[str, Any]) -> None:
+        try:
+            self._event_sink(event)
+        except Exception:
+            return
+
+    def create_request(
+        self,
+        *,
+        action_type: str,
+        title: str,
+        prompt: str,
+        options: list[dict[str, Any]] | None = None,
+        inputMode: str = "text",
+        placeholder: str = "",
+        side: str = "center",
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._counter += 1
+            request = {
+                "id": f"human-action-{self._counter}",
+                "type": action_type,
+                "title": title,
+                "prompt": prompt,
+                "options": options or [],
+                "inputMode": inputMode,
+                "placeholder": placeholder,
+                "side": side,
+            }
+            self._pending = request
+        self._publish({"type": "human_action_required", "action": request})
+        return request
+
+    async def wait_for_response(self, action_id: str, *, stop_event=None) -> dict[str, Any]:
+        while True:
+            with self._lock:
+                response = self._responses.pop(action_id, None)
+            if response is not None:
+                self.clear_pending(action_id)
+                return response
+
+            if stop_event is not None and getattr(stop_event, "is_set", None):
+                if stop_event.is_set():
+                    raise asyncio.CancelledError("游戏被用户终止")
+            await asyncio.sleep(0.2)
+
+    def submit(self, action_id: str, payload: dict[str, Any]) -> tuple[bool, str]:
+        with self._lock:
+            if not self._pending or self._pending.get("id") != action_id:
+                return False, "当前没有匹配的人类待处理操作"
+            self._responses[action_id] = payload
+        return True, "ok"
+
+    def get_pending(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._pending) if self._pending else None
+
+    def clear_pending(self, action_id: str | None = None) -> None:
+        should_publish = False
+        with self._lock:
+            if self._pending and (action_id is None or self._pending.get("id") == action_id):
+                self._pending = None
+                should_publish = True
+        if should_publish:
+            self._publish({"type": "human_action_cleared", "actionId": action_id})
 
 
 def create_app() -> FastAPI:
@@ -319,15 +412,17 @@ def create_app() -> FastAPI:
 
     bus = EventBus()
     runtime = GameRuntime()
+    runtime.human_broker = HumanInputBroker(bus.publish)
 
     @app.on_event("startup")
     async def _startup() -> None:
         # 绑定主事件循环，以便支持跨线程事件推送
         bus.bind_loop(asyncio.get_running_loop())
 
-    async def _run_game_async(game_id: str, stop_event: threading.Event | None) -> None:
+    async def _run_game_async(game_id: str, mode: str, stop_event: threading.Event | None) -> None:
         with runtime.lock:
             runtime.status = "running"
+            runtime.mode = mode
             runtime.game_id = game_id
             runtime.last_error = None
             runtime.log_path = None
@@ -337,7 +432,13 @@ def create_app() -> FastAPI:
             {"type": "system", "content": f"游戏启动中… (game_id={game_id})"})
 
         try:
-            log_path, experience_path = await run_game_session(game_id=game_id, event_sink=bus.publish, stop_event=stop_event)
+            log_path, experience_path = await run_game_session(
+                game_id=game_id,
+                mode=mode,
+                event_sink=bus.publish,
+                stop_event=stop_event,
+                human_broker=runtime.human_broker,
+            )
             with runtime.lock:
                 runtime.log_path = log_path
                 runtime.experience_path = experience_path
@@ -362,12 +463,12 @@ def create_app() -> FastAPI:
                 runtime.last_error = str(exc)
             bus.publish({"type": "day_error", "content": f"游戏异常终止: {exc}"})
 
-    def _thread_entry(game_id: str, stop_event: threading.Event) -> None:
+    def _thread_entry(game_id: str, mode: str, stop_event: threading.Event) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         task: asyncio.Task | None = None
         try:
-            task = loop.create_task(_run_game_async(game_id, stop_event))
+            task = loop.create_task(_run_game_async(game_id, mode, stop_event))
             with runtime.lock:
                 runtime.thread_loop = loop
                 runtime.thread_task = task
@@ -413,6 +514,7 @@ def create_app() -> FastAPI:
     async def game_status() -> StatusResponse:
         return StatusResponse(
             status=runtime.status,
+            mode=runtime.mode,
             gameId=runtime.game_id,
             logPath=runtime.log_path,
             experiencePath=runtime.experience_path,
@@ -479,22 +581,50 @@ def create_app() -> FastAPI:
             players=players,
         )
 
+    @app.get("/api/human/pending", response_model=HumanPendingResponse)
+    async def get_human_pending() -> HumanPendingResponse:
+        broker = runtime.human_broker
+        return HumanPendingResponse(pending=broker.get_pending() if broker else None)
+
+    @app.post("/api/human/submit")
+    async def submit_human_action(payload: HumanSubmitRequest) -> dict[str, Any]:
+        broker = runtime.human_broker
+        if not broker:
+            raise HTTPException(status_code=503, detail="Human broker unavailable")
+        ok, message = broker.submit(
+            payload.actionId,
+            {
+                "choice": payload.choice,
+                "text": payload.text,
+            },
+        )
+        if not ok:
+            raise HTTPException(status_code=409, detail=message)
+        return {"ok": True}
+
     @app.post("/api/game/start", response_model=StartGameResponse)
-    async def start_game() -> StartGameResponse:
+    async def start_game(payload: StartGameRequest | None = None) -> StartGameResponse:
         with runtime.lock:
             running = runtime.thread is not None and runtime.thread.is_alive()
         if running:
             raise HTTPException(
                 status_code=409, detail="A game is already running")
 
+        mode = str((payload.mode if payload else "admin") or "admin").lower()
+        if mode not in {"admin", "user"}:
+            raise HTTPException(status_code=400, detail="Unsupported game mode")
+
         game_id = _new_game_id()
         stop_event = threading.Event()
+        if runtime.human_broker:
+            runtime.human_broker.clear_pending()
         t = threading.Thread(target=_thread_entry, args=(
-            game_id, stop_event), daemon=True)
+            game_id, mode, stop_event), daemon=True)
         with runtime.lock:
             runtime.stop_event = stop_event
             runtime.thread = t
             runtime.status = "running"
+            runtime.mode = mode
             runtime.game_id = game_id
             runtime.last_error = None
             runtime.log_path = None
@@ -502,9 +632,9 @@ def create_app() -> FastAPI:
         t.start()
 
         # 通知已连接的 WS 客户端
-        bus.publish({"type": "system", "content": "已收到开始游戏请求"})
+        bus.publish({"type": "system", "content": f"已收到开始游戏请求，模式：{mode}"})
 
-        return StartGameResponse(gameId=game_id, status="running", wsUrl="/ws/game")
+        return StartGameResponse(gameId=game_id, status="running", wsUrl="/ws/game", mode=mode)
 
     @app.post("/api/game/stop", response_model=StopGameResponse)
     async def stop_game() -> StopGameResponse:
@@ -524,6 +654,8 @@ def create_app() -> FastAPI:
 
         # 请求取消：同时设置 stop_event + 取消线程内任务（若已可用）
         bus.publish({"type": "system", "content": "已收到终止游戏请求"})
+        if runtime.human_broker:
+            runtime.human_broker.clear_pending()
         if stop_event:
             stop_event.set()
         if loop:

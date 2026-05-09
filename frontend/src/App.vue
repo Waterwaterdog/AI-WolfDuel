@@ -56,6 +56,12 @@
     </div>
   </div>
 
+  <UserGameView
+    v-else-if="authenticatedUser === 'user'"
+    :username="authenticatedUser"
+    :on-logout="handleLogout"
+  />
+
   <div v-else class="app app--game">
     <div class="header">
       <Header
@@ -103,6 +109,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import Header from "./components/Header.vue";
 import RoomView from "./components/RoomView.vue";
 import GameFeed from "./components/GameFeed.vue";
+import UserGameView from "./user/UserGameView.vue";
 
 import { DEFAULT_AGENTS, API_URL, BUBBLE_LIFETIME_MS, TYPING_LIFETIME_MS, ASSETS } from "./config/constants";
 import { ReadOnlyClient } from "./services/websocket";
@@ -442,6 +449,7 @@ const startGame = async () => {
     const res = await fetch(`${API_URL}/api/game/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "admin" }),
     });
     if (!res.ok) {
       const text = await res.text();

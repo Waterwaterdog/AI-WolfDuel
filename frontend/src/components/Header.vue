@@ -201,6 +201,10 @@
 <script setup>
 import { ASSETS } from "../config/constants";
 
+defineOptions({
+  name: "GameHeader",
+});
+
 defineProps({
   statusText: { type: String, default: "等待连接" },
   phaseText: { type: String, default: "准备中" },

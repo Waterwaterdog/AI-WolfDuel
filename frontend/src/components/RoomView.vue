@@ -433,7 +433,7 @@ const props = defineProps({
   phaseText: { type: String, default: "" },
 });
 
-const { agents, bubbles, leaderboard, feed, onJumpToMessage, phaseText } = toRefs(props);
+const { agents, leaderboard, feed, onJumpToMessage, phaseText } = toRefs(props);
 
 const containerRef = ref(null);
 
@@ -502,7 +502,6 @@ const fetchPlayersInsights = async () => {
   }
 };
 
-const expandedBubbles = ref({});
 const hiddenBubbles = ref({});
 
 const handleCloseBubble = (agentId, bubbleKey, e) => {
