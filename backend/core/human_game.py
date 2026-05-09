@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 import random
+import re
 from typing import Any
 
 import numpy as np
@@ -167,22 +168,56 @@ def _safe_public_text(speech: str, behavior: str, fallback: str) -> str:
     text = str(speech or fallback or "").strip()
     if not text:
         return ""
-    suspicious_markers = [
-        "我的发言将",
-        "我应该保持",
-        "我需要保持",
-        "我的目的是",
-        "在这一轮的讨论中",
-        "我会谨慎地",
-        "我会保持冷静",
-        "避免过早暴露自己的身份",
-    ]
-    paragraphs = [seg.strip() for seg in text.split("\n\n") if seg.strip()]
-    public_parts = [
-        seg for seg in paragraphs
-        if not any(marker in seg for marker in suspicious_markers)
-    ]
-    text = "\n\n".join(public_parts).strip() or paragraphs[0]
+
+    def _looks_like_private_segment(segment: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(segment or ""))
+        if not normalized:
+            return False
+
+        direct_markers = [
+            "我的发言将",
+            "我应该保持",
+            "我需要保持",
+            "我的目的是",
+            "在这一轮的讨论中",
+            "我会谨慎地",
+            "我会保持冷静",
+            "不想暴露自己的身份",
+            "不暴露自己的身份",
+            "避免暴露自己的身份",
+            "避免过早暴露自己的身份",
+            "隐藏自己的身份",
+            "隐藏我自己的身份",
+            "保持低调",
+            "狼队友",
+        ]
+        if any(marker in normalized for marker in direct_markers):
+            return True
+
+        if "身份" in normalized and re.search(r"暴露|隐藏|伪装|低调", normalized):
+            return True
+
+        role_strategy_pattern = re.compile(
+            r"(?:作为|身为)(?:一名)?(?:狼人|女巫|预言家|猎人|村民|平民)"
+            r".{0,24}(?:不想|不会|不能|需要|必须|打算|希望|准备|避免|暴露|隐藏|伪装|低调|观察)"
+        )
+        return bool(role_strategy_pattern.search(normalized))
+
+    text = re.sub(r"(?is)<history>.*?</history>", " ", text)
+    text = re.sub(r"(?is)<think>.*?</think>", " ", text)
+    text = re.sub(r"(?is)</?(history|think)>", " ", text)
+    text = re.sub(r"\r\n?", "\n", text).strip()
+
+    segments = [seg.strip() for seg in re.split(r"\n\s*\n|\n", text) if seg.strip()]
+    public_parts: list[str] = []
+    for segment in segments:
+        if _looks_like_private_segment(segment):
+            if public_parts:
+                break
+            continue
+        public_parts.append(segment)
+
+    text = "\n".join(public_parts).strip() or (segments[0] if segments else "")
     if behavior and text.startswith(f"{behavior}"):
         text = text[len(behavior):].lstrip("：: \n")
     return text.strip()

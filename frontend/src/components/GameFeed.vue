@@ -238,6 +238,55 @@ const sanitizeDisplayText = (text, field = "") => {
   return value.trim();
 };
 
+const sanitizePublicOnlyText = (text) => {
+  const source = String(text || "").trim();
+  if (!source) return "";
+
+  const looksPrivate = (segment) => {
+    const normalized = String(segment || "").replace(/\s+/g, "");
+    if (!normalized) return false;
+
+    const directMarkers = [
+      "我的发言将",
+      "我应该保持",
+      "我需要保持",
+      "我的目的是",
+      "在这一轮的讨论中",
+      "我会谨慎地",
+      "我会保持冷静",
+      "不想暴露自己的身份",
+      "不暴露自己的身份",
+      "避免暴露自己的身份",
+      "避免过早暴露自己的身份",
+      "隐藏自己的身份",
+      "隐藏我自己的身份",
+      "保持低调",
+      "狼队友",
+    ];
+    if (directMarkers.some((marker) => normalized.includes(marker))) {
+      return true;
+    }
+
+    if (normalized.includes("身份") && /(暴露|隐藏|伪装|低调)/.test(normalized)) {
+      return true;
+    }
+
+    return /(?:作为|身为)(?:一名)?(?:狼人|女巫|预言家|猎人|村民|平民).{0,24}(?:不想|不会|不能|需要|必须|打算|希望|准备|避免|暴露|隐藏|伪装|低调|观察)/.test(normalized);
+  };
+
+  const segments = source.split(/\n\s*\n|\n/).map((segment) => segment.trim()).filter(Boolean);
+  const publicParts = [];
+  for (const segment of segments) {
+    if (looksPrivate(segment)) {
+      if (publicParts.length) break;
+      continue;
+    }
+    publicParts.push(segment);
+  }
+
+  return (publicParts.join("\n") || segments[0] || "").trim();
+};
+
 const normalizeFeedToMessages = (feed) => {
   const out = [];
   for (const item of feed || []) {
@@ -250,11 +299,11 @@ const normalizeFeedToMessages = (feed) => {
           timestamp: msg.timestamp,
           agent: msg.agent,
           role: msg.role,
-          content: sanitizeDisplayText(msg.content),
+          content: props.hideThoughts ? sanitizePublicOnlyText(sanitizeDisplayText(msg.content)) : sanitizeDisplayText(msg.content),
           agentId: msg.agentId,
           thought: sanitizeDisplayText(msg.thought, "thought"),
           behavior: sanitizeDisplayText(msg.behavior, "behavior"),
-          speech: sanitizeDisplayText(msg.speech, "speech"),
+          speech: props.hideThoughts ? sanitizePublicOnlyText(sanitizeDisplayText(msg.speech, "speech")) : sanitizeDisplayText(msg.speech, "speech"),
           category: msg.category,
           action: msg.action,
         });
@@ -268,11 +317,11 @@ const normalizeFeedToMessages = (feed) => {
         timestamp: item.data.timestamp,
         agent: item.data.agent,
         role: item.data.role,
-        content: sanitizeDisplayText(item.data.content),
+        content: props.hideThoughts ? sanitizePublicOnlyText(sanitizeDisplayText(item.data.content)) : sanitizeDisplayText(item.data.content),
         agentId: item.data.agentId,
         thought: sanitizeDisplayText(item.data.thought, "thought"),
         behavior: sanitizeDisplayText(item.data.behavior, "behavior"),
-        speech: sanitizeDisplayText(item.data.speech, "speech"),
+        speech: props.hideThoughts ? sanitizePublicOnlyText(sanitizeDisplayText(item.data.speech, "speech")) : sanitizeDisplayText(item.data.speech, "speech"),
         category: item.data.category,
         action: item.data.action,
       });

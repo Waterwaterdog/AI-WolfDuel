@@ -292,22 +292,71 @@ const extractBubbleText = (content) => String(content || "")
   .replace(/^[\"']+|[\"']+$/g, "")
   .trim();
 
+const sanitizePublicOnlyText = (text) => {
+  const source = String(text || "").trim();
+  if (!source) return "";
+
+  const looksPrivate = (segment) => {
+    const normalized = String(segment || "").replace(/\s+/g, "");
+    if (!normalized) return false;
+
+    const directMarkers = [
+      "我的发言将",
+      "我应该保持",
+      "我需要保持",
+      "我的目的是",
+      "在这一轮的讨论中",
+      "我会谨慎地",
+      "我会保持冷静",
+      "不想暴露自己的身份",
+      "不暴露自己的身份",
+      "避免暴露自己的身份",
+      "避免过早暴露自己的身份",
+      "隐藏自己的身份",
+      "隐藏我自己的身份",
+      "保持低调",
+      "狼队友",
+    ];
+    if (directMarkers.some((marker) => normalized.includes(marker))) {
+      return true;
+    }
+
+    if (normalized.includes("身份") && /(暴露|隐藏|伪装|低调)/.test(normalized)) {
+      return true;
+    }
+
+    return /(?:作为|身为)(?:一名)?(?:狼人|女巫|预言家|猎人|村民|平民).{0,24}(?:不想|不会|不能|需要|必须|打算|希望|准备|避免|暴露|隐藏|伪装|低调|观察)/.test(normalized);
+  };
+
+  const segments = source.split(/\n\s*\n|\n/).map((segment) => segment.trim()).filter(Boolean);
+  const publicParts = [];
+  for (const segment of segments) {
+    if (looksPrivate(segment)) {
+      if (publicParts.length) break;
+      continue;
+    }
+    publicParts.push(segment);
+  }
+
+  return (publicParts.join("\n") || segments[0] || "").trim();
+};
+
 const upsertBubbleFromMessage = (evt) => {
   if (!evt?.agentId) return;
   const behaviorText = String(evt.behavior || "").trim();
-  const speechText = String(evt.speech || evt.content || "").trim();
+  const speechText = sanitizePublicOnlyText(String(evt.speech || evt.content || "").trim());
   const text = [behaviorText ? `(表现) ${extractBubbleText(behaviorText)}` : "", speechText ? `(发言) ${extractBubbleText(speechText)}` : ""]
     .filter(Boolean)
     .join("\n");
   if (phaseClass.value === "is-night") {
-    setNightPrompt(text || extractBubbleText(evt.content || ""), BUBBLE_LIFETIME_MS);
+    setNightPrompt(text || sanitizePublicOnlyText(extractBubbleText(evt.content || "")), BUBBLE_LIFETIME_MS);
     return;
   }
   bubbles.value = {
     ...bubbles.value,
     [evt.agentId]: {
       agentId: evt.agentId,
-      text: text || extractBubbleText(evt.content || ""),
+      text: text || sanitizePublicOnlyText(extractBubbleText(evt.content || "")),
       timestamp: evt.timestamp || Date.now(),
     },
   };
