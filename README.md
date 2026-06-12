@@ -398,10 +398,6 @@ WolfAgents/
 - 它不仅有前端可视化，还处理了 user 模式下的信息公平性问题
 - 它不仅接一个模型，而是支持多模型与玩家级配置
 
-## 许可证
-
-本项目基于 [MIT License](./LICENSE) 开源。
-
 ---
 
 <div align="center">
