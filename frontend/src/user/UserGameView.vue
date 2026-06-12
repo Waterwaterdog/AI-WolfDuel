@@ -121,10 +121,11 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Header from "../components/Header.vue";
 import GameFeed from "../components/GameFeed.vue";
 import { ASSETS, BUBBLE_LIFETIME_MS, TYPING_LIFETIME_MS, DEFAULT_AGENTS } from "../config/constants";
+import { useBackgroundMusic } from "../hooks/useBackgroundMusic";
 import { useFeedProcessor } from "../hooks/useFeedProcessor";
 import { ReadOnlyClient } from "../services/websocket";
 import {
@@ -162,6 +163,7 @@ const nightPrompt = ref({ text: "", timestamp: 0 });
 const bubbles = ref({});
 const bubbleTimersRef = ref({});
 const clientRef = ref(null);
+const { setScene: setBgmScene } = useBackgroundMusic();
 let statusTimer = null;
 let pendingTimer = null;
 let overlayTimer = null;
@@ -640,6 +642,29 @@ onMounted(() => {
   ));
   startRealtime();
 });
+
+watch(
+  [isGameRunning, phaseText],
+  ([running, phase]) => {
+    if (!running) {
+      setBgmScene("lobby");
+      return;
+    }
+
+    if (String(phase || "").includes("夜")) {
+      setBgmScene("night");
+      return;
+    }
+
+    if (String(phase || "").includes("白")) {
+      setBgmScene("day");
+      return;
+    }
+
+    setBgmScene("silent");
+  },
+  { immediate: true }
+);
 
 onBeforeUnmount(() => {
   stopRealtime();

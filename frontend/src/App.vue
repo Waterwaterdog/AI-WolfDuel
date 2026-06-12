@@ -102,16 +102,23 @@
       </div>
     </div>
   </div>
+
+  <BackgroundMusicPanel
+    :muted="bgmMuted"
+    :on-toggle-mute="toggleBgmMuted"
+  />
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import BackgroundMusicPanel from "./components/BackgroundMusicPanel.vue";
 import Header from "./components/Header.vue";
 import RoomView from "./components/RoomView.vue";
 import GameFeed from "./components/GameFeed.vue";
 import UserGameView from "./user/UserGameView.vue";
 
 import { DEFAULT_AGENTS, API_URL, BUBBLE_LIFETIME_MS, TYPING_LIFETIME_MS, ASSETS } from "./config/constants";
+import { useBackgroundMusic } from "./hooks/useBackgroundMusic";
 import { ReadOnlyClient } from "./services/websocket";
 import { useFeedProcessor } from "./hooks/useFeedProcessor";
 
@@ -168,6 +175,11 @@ const bubbles = ref({});
 const clientRef = ref(null);
 const feedRef = ref(null);
 const bubbleTimersRef = ref({});
+const {
+  muted: bgmMuted,
+  setScene: setBgmScene,
+  toggleMuted: toggleBgmMuted,
+} = useBackgroundMusic();
 
 const roleMetaFromRole = (role) => {
   const raw = String(role || "").toLowerCase();
@@ -683,6 +695,36 @@ watch(
 
     teardownRealtime();
     resetRuntimeState();
+  },
+  { immediate: true }
+);
+
+watch(
+  [isAuthenticated, authenticatedUser, isGameRunning, phaseText],
+  ([authed, username, running, phase]) => {
+    if (!authed) {
+      setBgmScene("login");
+      return;
+    }
+
+    if (username === "user") return;
+
+    if (!running) {
+      setBgmScene("lobby");
+      return;
+    }
+
+    if (String(phase || "").includes("夜")) {
+      setBgmScene("night");
+      return;
+    }
+
+    if (String(phase || "").includes("白")) {
+      setBgmScene("day");
+      return;
+    }
+
+    setBgmScene("silent");
   },
   { immediate: true }
 );

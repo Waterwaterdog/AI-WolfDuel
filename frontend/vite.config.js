@@ -5,7 +5,10 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   server: {
-    allowedHosts: ["localhost", "trading.evoagents.cn","www.evoagents.cn"]
+    allowedHosts: ["localhost", "trading.evoagents.cn","www.evoagents.cn"],
+    fs: {
+      allow: [".."],
+    },
   },
   plugins: [vue(), tsconfigPaths(), tailwindcss()],
   preview: {
