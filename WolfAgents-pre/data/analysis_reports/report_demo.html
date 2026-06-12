@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>狼人杀游戏AI分析报告</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #0c1220 0%, #1a2439 50%, #0f172a 100%);
+            color: #e2e8f0;
+            overflow-x: hidden;
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: rgba(15, 23, 42, 0.6);
+            padding: 40px 0;
+            text-align: center;
+            border-bottom: 1px solid rgba(94, 234, 212, 0.15);
+            backdrop-filter: blur(12px);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: radial-gradient(circle at 20% 30%, rgba(94, 234, 212, 0.1) 0%, transparent 40%),
+                radial-gradient(circle at 80% 70%, rgba(56, 189, 248, 0.1) 0%, transparent 40%);
+            pointer-events: none;
+        }
+
+        .header h1 {
+            font-size: 2.8em;
+            background: linear-gradient(90deg, #5eead4 0%, #38bdf8 50%, #818cf8 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 15px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .header p {
+            color: #94a3b8;
+            font-size: 1.2em;
+            position: relative;
+            z-index: 2;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px 20px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 40px;
+            padding: 0 10px;
+        }
+
+        .tab {
+            padding: 14px 28px;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            color: #94a3b8;
+            font-weight: 600;
+            background: rgba(15, 23, 42, 0.4);
+            border: 1px solid rgba(94, 234, 212, 0.1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .tab::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(94, 234, 212, 0.2), transparent);
+            transition: left 0.5s;
+        }
+
+        .tab:hover::before {
+            left: 100%;
+        }
+
+        .tab:hover {
+            color: #e2e8f0;
+            border-color: rgba(94, 234, 212, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .tab.active {
+            color: #5eead4;
+            background: rgba(94, 234, 212, 0.1);
+            border-color: rgba(94, 234, 212, 0.4);
+            box-shadow: 0 4px 20px rgba(94, 234, 212, 0.15);
+        }
+
+        .content-area {
+            background: rgba(30, 41, 59, 0.4);
+            border-radius: 16px;
+            padding: 40px;
+            min-height: 600px;
+            border: 1px solid rgba(94, 234, 212, 0.15);
+            backdrop-filter: blur(8px);
+            box-shadow: 0 8px 32px rgba(2, 8, 20, 0.4);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 25px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: rgba(15, 23, 42, 0.5);
+            padding: 25px;
+            border-radius: 12px;
+            text-align: center;
+            border: 1px solid rgba(94, 234, 212, 0.1);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, rgba(94, 234, 212, 0.05) 0%, rgba(56, 189, 248, 0.05) 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .stat-card:hover::before {
+            opacity: 1;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px) scale(1.02);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+            border-color: rgba(94, 234, 212, 0.3);
+        }
+
+        .stat-value {
+            font-size: 2.2em;
+            font-weight: 700;
+            margin-bottom: 8px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .stat-label {
+            color: #94a3b8;
+            font-size: 0.95em;
+            position: relative;
+            z-index: 2;
+        }
+
+        .viz-container {
+            width: 100%;
+            height: 640px;
+            position: relative;
+            margin-bottom: 40px;
+            background: rgba(15, 23, 42, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(94, 234, 212, 0.1);
+        }
+
+        .player-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 25px;
+            margin-top: 40px;
+        }
+
+        .player-card {
+            background: rgba(15, 23, 42, 0.5);
+            border-radius: 12px;
+            padding: 25px;
+            border: 1px solid rgba(94, 234, 212, 0.1);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .player-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, rgba(94, 234, 212, 0.05) 0%, rgba(56, 189, 248, 0.05) 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .player-card:hover::before {
+            opacity: 1;
+        }
+
+        .player-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+            border-color: rgba(94, 234, 212, 0.25);
+        }
+
+        .player-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .player-name {
+            font-size: 1.3em;
+            font-weight: 700;
+            color: #e2e8f0;
+        }
+
+        .player-role {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .role-werewolf {
+            background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
+        }
+
+        .role-villager {
+            background: linear-gradient(135deg, #60a5fa 0%, #93c5fd 100%);
+        }
+
+        .role-seer {
+            background: linear-gradient(135deg, #a78bfa 0%, #c4b5fd 100%);
+        }
+
+        .role-witch {
+            background: linear-gradient(135deg, #f472b6 0%, #f9a8d4 100%);
+        }
+
+        .role-hunter {
+            background: linear-gradient(135deg, #f59e0b 0%, #fcd34d 100%);
+        }
+
+        .metrics {
+            margin-top: 20px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
+
+        .metric-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(148, 163, 184, 0.15);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 6px;
+        }
+
+        .metric-fill {
+            height: 100%;
+            transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 0 10px rgba(94, 234, 212, 0.3);
+        }
+
+        .analysis-text {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(15, 23, 42, 0.4);
+            border-radius: 8px;
+            font-size: 0.85em;
+            line-height: 1.6;
+            color: #cbd5e1;
+            border-left: 3px solid rgba(94, 234, 212, 0.3);
+            position: relative;
+            z-index: 2;
+        }
+
+        .click-hint {
+            font-size: 0.75em;
+            color: #5eead4;
+            margin-top: 8px;
+            opacity: 0.8;
+            font-weight: 500;
+            transition: opacity 0.3s ease;
+        }
+
+        .click-hint:hover {
+            opacity: 1;
+        }
+
+        /* 模态框样式 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(2, 6, 23, 0.85);
+            backdrop-filter: blur(10px);
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
+
+        .modal-content {
+            background: rgba(30, 41, 59, 0.95);
+            margin: 5% auto;
+            padding: 35px;
+            border-radius: 16px;
+            width: 80%;
+            max-width: 650px;
+            border: 1px solid rgba(94, 234, 212, 0.2);
+            position: relative;
+            animation: modalSlideIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+        }
+
+        @keyframes modalSlideIn {
+            from {
+                transform: translateY(-30px) scale(0.95);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0) scale(1);
+                opacity: 1;
+            }
+        }
+
+        .close {
+            color: #94a3b8;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            position: absolute;
+            right: 25px;
+            top: 20px;
+            transition: color 0.3s ease;
+            z-index: 10;
+        }
+
+        .close:hover {
+            color: #e2e8f0;
+        }
+
+        .modal-title {
+            color: #5eead4;
+            font-size: 1.6em;
+            margin-bottom: 20px;
+            padding-right: 40px;
+            font-weight: 600;
+            background: linear-gradient(90deg, #5eead4 0%, #38bdf8 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        .modal-body {
+            line-height: 1.7;
+            color: #cbd5e1;
+            font-size: 1.05em;
+        }
+
+        .modal-highlight {
+            background: rgba(94, 234, 212, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 4px solid #5eead4;
+        }
+
+        .modal-highlight strong {
+            color: #5eead4;
+            display: block;
+            margin-bottom: 8px;
+        }
+
+        /* 响应式优化 */
+        @media (max-width: 768px) {
+            .header {
+                padding: 30px 0;
+            }
+
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .tabs {
+                gap: 10px;
+            }
+
+            .tab {
+                padding: 12px 20px;
+                font-size: 0.9em;
+            }
+
+            .content-area {
+                padding: 25px;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                gap: 15px;
+            }
+
+            .viz-container {
+                height: 500px;
+                padding: 15px;
+            }
+
+            .modal-content {
+                width: 95%;
+                margin: 10% auto;
+                padding: 25px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>狼人杀游戏AI分析报告</h1>
+        <p>基于大语言模型的多维行为分析系统</p>
+    </div>
+
+    <div class="container">
+        <div class="tabs">
+            <div class="tab active" data-viz="psychology">心理画像分析</div>
+            <div class="tab" data-viz="network">社交网络建模</div>
+        </div>
+
+        <div class="content-area">
+            <div class="stats-grid" id="statsGrid"></div>
+            <div class="viz-container" id="vizContainer"></div>
+            <div class="legend" id="legend"></div>
+            <div class="player-cards" id="playerCards"></div>
+        </div>
+    </div>
+
+    <div id="analysisModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <div class="modal-title" id="modalTitle"></div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
+    <script>
+        // 数据结构保持不变
+        const analysisData = {
+            gameId: "20251221_114858",
+            players: [
+                { id: "Player1", name: "玩家1", role: "villager", isWerewolf: false },
+                { id: "Player2", name: "玩家2", role: "witch", isWerewolf: false },
+                { id: "Player3", name: "玩家3", role: "werewolf", isWerewolf: true },
+                { id: "Player4", name: "玩家4", role: "hunter", isWerewolf: false },
+                { id: "Player5", name: "玩家5", role: "werewolf", isWerewolf: true },
+                { id: "Player6", name: "玩家6", role: "seer", isWerewolf: false },
+                { id: "Player7", name: "玩家7", role: "werewolf", isWerewolf: true },
+                { id: "Player8", name: "玩家8", role: "villager", isWerewolf: false },
+                { id: "Player9", name: "玩家9", role: "villager", isWerewolf: false }
+            ],
+            analysisTexts: {
+                stats: {
+                    cognitiveConsistency: {
+                        title: "认知一致性分析",
+                        content: "认知一致性反映玩家内心独白与公开行为的匹配程度。狼人玩家需要伪装身份，因此该值普遍偏低（<0.7）。本局Player1得分0.92，显示极强的内在一致性，符合好人特征。"
+                    },
+                    deceptionScore: {
+                        title: "欺骗指数分析",
+                        content: "基于语言模式识别的欺骗指数，通过分析发言中的矛盾点、过度修饰和情绪抑制等特征计算。Player7得分0.82，其狼人身份在发言中表现出明显的逻辑矛盾与情绪控制。"
+                    },
+                    strategyPurity: {
+                        title: "策略纯度分析",
+                        content: "策略纯度衡量玩家行为模式的一致性。好人玩家通常保持稳定的策略（>0.7），而狼人因需伪装，策略纯度较低。Player3的0.42分暴露其反复调整策略的异常行为。"
+                    },
+                    stressResponse: {
+                        title: "应激反应分析",
+                        content: "应激反应衡量玩家在压力下的表现稳定性。Player6在被质疑时表现出低应激反应（0.35），这与真预言家应有的坚定态度不符，反而暴露了其冲动决策的弱点。"
+                    }
+                },
+                players: {
+                    "Player6": {
+                        title: "Player6（预言家）行为剖析",
+                        content: "Player6作为真预言家首夜查验Player7为狼人，这本应是关键信息。但其过度自信（0.9）导致决策失误：1）过早暴露身份，未建立足够信任；2）发言过于绝对，使用'必须''立即'等词汇，触发好人警惕；3）未能提供可验证的后续计划。最终被好人阵营误投，是典型的好人信息优势转化为劣势案例。"
+                    },
+                    "Player7": {
+                        title: "Player7（狼人）欺骗策略",
+                        content: "Player7展现高明的欺骗技巧：1）欺骗指数0.82，通过逻辑清晰的发言掩盖狼人身份；2）利用'虚假共识'偏差（0.6），错误估计说服能力；3）在被指控时冷静反击，将焦点转移至Player6的行为模式而非查验内容。成功引导好人误投真预言家，是狼人阵营获胜的关键。"
+                    },
+                    "Player2": {
+                        title: "Player2（女巫）沉没成本陷阱",
+                        content: "Player2首夜使用解药救Player4后，陷入沉没成本谬误（0.8）。其后续决策过度维护首夜判断，即使Player6的行为可疑，也因不愿承认首夜可能犯错而支持投出Player6。这种'维护前期投入'的心理导致好人阵营失去真预言家。"
+                    }
+                },
+                network: {
+                    trustRelations: {
+                        title: "信任网络结构解读",
+                        content: "网络中 trust 关系（绿色）显示好人阵营的信息流动。Player2→Player4的信任源于首夜救人事件，这种基于事实的信任较为稳固。狼人同盟（橙色）形成隐性三角结构，虽无明显信任边，但互相不怀疑的特征暴露了阵营关系。"
+                    },
+                    echoChamber: {
+                        title: "回声室效应检测",
+                        content: "检测到2个回声室：1）Player1-Player3-Player5形成对Player6的怀疑圈，三人互相强化'Player6可疑'的观点；2）狼人内部(Player3-Player7-Player5)形成观点共振，投票行为高度同步。这种封闭信息循环是狼人杀社交网络的典型特征。"
+                    }
+                }
+            },
+            psychology: {
+                metrics: ["cognitiveConsistency", "stressResponse", "strategyPurity", "expressiveness", "deceptionScore"],
+                players: {
+                    "Player1": { cognitiveConsistency: 0.92, stressResponse: 0.78, strategyPurity: 0.88, expressiveness: 0.65, deceptionScore: 0.12 },
+                    "Player2": { cognitiveConsistency: 0.85, stressResponse: 0.82, strategyPurity: 0.75, expressiveness: 0.72, deceptionScore: 0.23 },
+                    "Player3": { cognitiveConsistency: 0.68, stressResponse: 0.55, strategyPurity: 0.42, expressiveness: 0.58, deceptionScore: 0.71 },
+                    "Player4": { cognitiveConsistency: 0.88, stressResponse: 0.85, strategyPurity: 0.90, expressiveness: 0.70, deceptionScore: 0.15 },
+                    "Player5": { cognitiveConsistency: 0.72, stressResponse: 0.60, strategyPurity: 0.48, expressiveness: 0.62, deceptionScore: 0.68 },
+                    "Player6": { cognitiveConsistency: 0.45, stressResponse: 0.35, strategyPurity: 0.85, expressiveness: 0.88, deceptionScore: 0.25 },
+                    "Player7": { cognitiveConsistency: 0.58, stressResponse: 0.70, strategyPurity: 0.52, expressiveness: 0.80, deceptionScore: 0.82 },
+                    "Player8": { cognitiveConsistency: 0.78, stressResponse: 0.68, strategyPurity: 0.65, expressiveness: 0.55, deceptionScore: 0.28 },
+                    "Player9": { cognitiveConsistency: 0.82, stressResponse: 0.72, strategyPurity: 0.70, expressiveness: 0.60, deceptionScore: 0.22 }
+                }
+            },
+            network: {
+                nodes: [
+                    { id: "Player1", group: "villager", trust: 0.8 },
+                    { id: "Player2", group: "witch", trust: 0.7 },
+                    { id: "Player3", group: "werewolf", trust: 0.3 },
+                    { id: "Player4", group: "hunter", trust: 0.85 },
+                    { id: "Player5", group: "werewolf", trust: 0.35 },
+                    { id: "Player6", group: "seer", trust: 0.6 },
+                    { id: "Player7", group: "werewolf", trust: 0.4 },
+                    { id: "Player8", group: "villager", trust: 0.75 },
+                    { id: "Player9", group: "villager", trust: 0.78 }
+                ],
+                links: [
+                    { source: "Player1", target: "Player3", value: -0.6, type: "suspect" },
+                    { source: "Player1", target: "Player6", value: -0.7, type: "suspect" },
+                    { source: "Player2", target: "Player6", value: -0.5, type: "suspect" },
+                    { source: "Player2", target: "Player4", value: 0.8, type: "trust" },
+                    { source: "Player3", target: "Player1", value: 0.5, type: "trust" },
+                    { source: "Player3", target: "Player7", value: 0.7, type: "ally" },
+                    { source: "Player5", target: "Player7", value: 0.8, type: "ally" },
+                    { source: "Player5", target: "Player6", value: -0.6, type: "suspect" },
+                    { source: "Player7", target: "Player6", value: -0.8, type: "suspect" },
+                    { source: "Player7", target: "Player2", value: -0.4, type: "suspect" },
+                    { source: "Player8", target: "Player6", value: -0.5, type: "suspect" },
+                    { source: "Player9", target: "Player6", value: -0.4, type: "suspect" }
+                ]
+            }
+        };
+
+        let currentViz = 'psychology';
+        const modal = document.getElementById('analysisModal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalBody = document.getElementById('modalBody');
+        const closeBtn = document.querySelector('.close');
+
+        // 添加全局图表实例变量
+        let currentChart = null;
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function () {
+            initializeTabs();
+            initializeModal();
+            renderVisualization();
+        });
+
+        // Tab切换
+        function initializeTabs() {
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => {
+                tab.addEventListener('click', function () {
+                    tabs.forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    currentViz = this.dataset.viz;
+                    renderVisualization();
+                });
+            });
+        }
+
+        // 模态框控制
+        function initializeModal() {
+            closeBtn.onclick = function () {
+                modal.style.display = 'none';
+            };
+
+            window.onclick = function (event) {
+                if (event.target === modal) {
+                    modal.style.display = 'none';
+                }
+            };
+        }
+
+        function showAnalysis(title, content) {
+            modalTitle.textContent = title;
+            modalBody.innerHTML = content;
+            modal.style.display = 'block';
+        }
+
+        // 主渲染函数
+        function renderVisualization() {
+            // 销毁现有图表实例
+            if (currentChart) {
+                currentChart.dispose();
+                currentChart = null;
+            }
+
+            // 清空容器
+            document.getElementById('vizContainer').innerHTML = '';
+            document.getElementById('legend').innerHTML = '';
+            document.getElementById('playerCards').innerHTML = '';
+
+            switch (currentViz) {
+                case 'psychology':
+                    renderPsychology();
+                    break;
+                case 'network':
+                    renderNetwork();
+                    break;
+            }
+        }
+
+        // 心理画像分析
+        function renderPsychology() {
+            const playerMetrics = Object.values(analysisData.psychology.players);
+            const avgConsistency = playerMetrics.length 
+                ? (playerMetrics.reduce((sum, p) => sum + p.cognitiveConsistency, 0) / playerMetrics.length * 100).toFixed(0) + '%'
+                : '0%';
+            const maxDeception = playerMetrics.length
+                ? (Math.max(...playerMetrics.map(p => p.deceptionScore)) * 100).toFixed(0) + '%'
+                : '0%';
+            const purityRange = playerMetrics.length
+                ? ((Math.max(...playerMetrics.map(p => p.strategyPurity)) - Math.min(...playerMetrics.map(p => p.strategyPurity))) * 100).toFixed(0) + '%'
+                : '0%';
+            const stressAnomalies = playerMetrics.filter(p => p.stressResponse < 0.5).length + '人';
+
+            const stats = [
+                {
+                    key: "cognitiveConsistency",
+                    label: '平均认知一致性',
+                    value: avgConsistency,
+                    color: '#5eead4'
+                },
+                {
+                    key: "deceptionScore",
+                    label: '最大欺骗指数',
+                    value: maxDeception,
+                    color: '#ef4444'
+                },
+                {
+                    key: "strategyPurity",
+                    label: '策略纯度差异',
+                    value: purityRange,
+                    color: '#f59e0b'
+                },
+                {
+                    key: "stressResponse",
+                    label: '应激反应异常',
+                    value: stressAnomalies,
+                    color: '#a78bfa'
+                }
+            ];
+
+            document.getElementById('statsGrid').innerHTML = stats.map(stat => `
+                <div class="stat-card" onclick="showAnalysis(analysisData.analysisTexts.stats['${stat.key}'].title, analysisData.analysisTexts.stats['${stat.key}'].content)">
+                    <div class="stat-value" style="color: ${stat.color}">${stat.value}</div>
+                    <div class="stat-label">${stat.label}</div>
+                    <div class="click-hint">点击查看AI分析</div>
+                </div>
+            `).join('');
+
+            const container = document.getElementById('vizContainer');
+            const chart = echarts.init(container);
+            currentChart = chart; // 保存实例引用
+
+            const players = Object.keys(analysisData.psychology.players);
+            const metrics = analysisData.psychology.metrics;
+
+            const series = metrics.map((metric, index) => ({
+                name: getMetricName(metric),
+                type: 'radar',
+                data: [{
+                    value: players.map(p => analysisData.psychology.players[p][metric] * 100),
+                    name: getMetricName(metric),
+                    itemStyle: { color: getColor(index) },
+                    areaStyle: { opacity: 0.3 }
+                }]
+            }));
+
+            const option = {
+                backgroundColor: 'transparent',
+                title: {
+                    text: '玩家心理画像雷达图',
+                    textStyle: { color: '#e2e8f0', fontSize: 18 },
+                    left: 'center'
+                },
+                legend: {
+                    data: metrics.map(getMetricName),
+                    bottom: 0,
+                    textStyle: { color: '#94a3b8' }
+                },
+                radar: {
+                    indicator: players.map(p => ({
+                        name: p,
+                        max: 100,
+                        axisLabel: { color: '#94a3b8' }
+                    })),
+                    splitArea: {
+                        areaStyle: {
+                            color: ['rgba(94, 234, 212, 0.1)', 'rgba(94, 234, 212, 0.05)']
+                        }
+                    },
+                    axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.3)' } },
+                    splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } }
+                },
+                series: series,
+                tooltip: {
+                    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                    borderColor: 'rgba(94, 234, 212, 0.3)',
+                    textStyle: { color: '#e2e8f0' }
+                }
+            };
+
+            chart.setOption(option);
+
+            // 关键修复：延迟resize确保渲染
+            setTimeout(() => {
+                chart.resize();
+            }, 100);
+
+            renderPlayerCards('psychology');
+        }
+
+        // 社交网络建模
+        function renderNetwork() {
+            const trustCount = analysisData.network.links.filter(l => l.type === 'trust').length;
+            const suspectCount = analysisData.network.links.filter(l => l.type === 'suspect').length;
+            const echoChamberCount = Array.isArray(analysisData.network.echoChambers)
+                ? analysisData.network.echoChambers.length
+                : (analysisData.network.echoChamberCount || 0);
+            const avgTrust = analysisData.network.nodes.length
+                ? (analysisData.network.nodes.reduce((sum, n) => sum + (n.trust || 0), 0) / analysisData.network.nodes.length)
+                : 0;
+
+            const stats = [
+                { key: 'trustRelations', label: '信任关系数', value: trustCount, color: '#5eead4' },
+                { key: 'suspectRelations', label: '怀疑关系数', value: suspectCount, color: '#ef4444' },
+                { key: 'echoChamber', label: '回声室数', value: echoChamberCount, color: '#f59e0b' },
+                { key: 'avgTrust', label: '平均信任度', value: avgTrust.toFixed(1), color: '#a78bfa' }
+            ];
+
+            document.getElementById('statsGrid').innerHTML = stats.map(stat => `
+                <div class="stat-card" data-network-key="${stat.key}">
+                    <div class="stat-value" style="color: ${stat.color}">${stat.value}</div>
+                    <div class="stat-label">${stat.label}</div>
+                    <div class="click-hint">点击查看AI分析</div>
+                </div>
+            `).join('');
+
+            // 绑定网络统计卡片的点击事件，缺内容时给出兜底提示
+            document.querySelectorAll('.stat-card[data-network-key]').forEach(card => {
+                const key = card.dataset.networkKey;
+                const analysis = analysisData.analysisTexts?.network?.[key];
+                const fallbackTitle = card.querySelector('.stat-label')?.textContent || 'AI分析';
+                const fallbackContent = '暂无可用的AI分析文本，稍后再试。';
+
+                card.addEventListener('click', () => {
+                    showAnalysis(
+                        analysis?.title || fallbackTitle,
+                        analysis?.content || fallbackContent
+                    );
+                });
+            });
+
+            const container = document.getElementById('vizContainer');
+            const width = container.offsetWidth;
+            const height = 600;
+
+            const svg = d3.select(container)
+                .append('svg')
+                .attr('class', 'network-svg')
+                .attr('viewBox', `0 0 ${width} ${height}`);
+
+            const simulation = d3.forceSimulation(analysisData.network.nodes)
+                .force('link', d3.forceLink(analysisData.network.links).id(d => d.id).distance(100))
+                .force('charge', d3.forceManyBody().strength(-300))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(50));
+
+            const link = svg.append('g')
+                .selectAll('line')
+                .data(analysisData.network.links)
+                .enter().append('line')
+                .attr('class', 'link')
+                .attr('stroke', d => d.type === 'trust' ? '#5eead4' : d.type === 'ally' ? '#f59e0b' : '#ef4444')
+                .attr('stroke-opacity', 0.6)
+                .attr('stroke-width', d => Math.abs(d.value) * 3);
+
+            const node = svg.append('g')
+                .selectAll('g')
+                .data(analysisData.network.nodes)
+                .enter().append('g')
+                .attr('class', 'node')
+                .call(d3.drag()
+                    .on('start', dragstarted)
+                    .on('drag', dragged)
+                    .on('end', dragended));
+
+            node.append('circle')
+                .attr('r', d => d.trust * 30 + 20)
+                .attr('fill', d => getRoleColor(d.group))
+                .attr('stroke', '#fff')
+                .attr('stroke-width', 2)
+                .style('cursor', 'pointer')
+                .on('click', function (event, d) {
+                    const player = analysisData.players.find(p => p.id === d.id);
+                    const connections = analysisData.network.links.filter(l =>
+                        l.source.id === d.id || l.target.id === d.id
+                    );
+                    const allies = connections.filter(c => c.type === 'ally').length;
+
+                    const analysis = allies > 0
+                        ? "🐺 社交网络异常：检测到同盟关系，与狼人阵营行为模式吻合。在真实对局中需警惕其隐性协同。"
+                        : "🛡️ 社交关系清晰：信任与怀疑关系明确，符合好人阵营信息公开的特征。";
+
+                    showAnalysis(`${d.id}（${getRoleName(player.role)}）社交网络分析`, analysis);
+                });
+
+            node.append('text')
+                .attr('dy', '.35em')
+                .attr('text-anchor', 'middle')
+                .text(d => d.id)
+                .style('font-size', '12px')
+                .style('fill', '#fff');
+
+            node.append('title')
+                .text(d => `${d.id}\n信任度: ${d.trust.toFixed(2)}`);
+
+            simulation.on('tick', () => {
+                link
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+            });
+
+            function dragstarted(event, d) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            }
+
+            function dragged(event, d) {
+                d.fx = event.x;
+                d.fy = event.y;
+            }
+
+            function dragended(event, d) {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            }
+
+            renderPlayerCards('network');
+        }
+
+        // 渲染玩家卡片
+        function renderPlayerCards(vizType) {
+            const container = document.getElementById('playerCards');
+
+            if (vizType === 'psychology') {
+                container.innerHTML = Object.keys(analysisData.psychology.players).map(playerId => {
+                    const metrics = analysisData.psychology.players[playerId];
+                    const player = analysisData.players.find(p => p.id === playerId);
+                    const deception = metrics.deceptionScore > 0.6;
+                    const analysis = deception
+                        ? "⚠️ 高风险玩家：欺骗指数显著偏高，建议重点观察其发言逻辑的一致性。"
+                        : "✅ 行为模式稳定：认知一致性良好，应激反应正常，符合好人阵营特征。";
+
+                    return `
+                        <div class="player-card" onclick="showAnalysis(analysisData.analysisTexts.players['${playerId}'] ? analysisData.analysisTexts.players['${playerId}'].title : '${playerId}行为分析', analysisData.analysisTexts.players['${playerId}'] ? analysisData.analysisTexts.players['${playerId}'].content : '${analysis}')">
+                            <div class="player-header">
+                                <div class="player-name">${playerId}</div>
+                                <div class="player-role role-${player.role}">${getRoleName(player.role)}</div>
+                            </div>
+                            <div class="metrics">
+                                ${Object.entries(metrics).map(([key, value]) => `
+                                    <div class="metric">
+                                        <span>${getMetricName(key)}</span>
+                                        <span style="color:${key === 'deceptionScore' && value > 0.6 ? '#ef4444' : '#5eead4'}; font-weight:600;">${(value * 100).toFixed(0)}%</span>
+                                    </div>
+                                    <div class="metric-bar">
+                                        <div class="metric-fill" style="width: ${value * 100}%; background: ${getMetricColor(key)};"></div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                            <div class="analysis-text">
+                                ${analysis}
+                            </div>
+                            <div class="click-hint">点击查看完整AI解读 →</div>
+                        </div>
+                    `;
+                }).join('');
+            } else if (vizType === 'network') {
+                container.innerHTML = analysisData.network.nodes.map(node => {
+                    const player = analysisData.players.find(p => p.id === node.id);
+                    const connections = analysisData.network.links.filter(l =>
+                        l.source.id === node.id || l.target.id === node.id
+                    );
+                    const allies = connections.filter(c => c.type === 'ally').length;
+                    const trusts = connections.filter(c => c.type === 'trust').length;
+                    const suspects = connections.filter(c => c.type === 'suspect').length;
+
+                    // 去重的主要连接展示，避免同一玩家重复出现
+                    const seenPartners = new Set();
+                    const partnerLabels = [];
+                    connections.forEach(c => {
+                        const other = c.source.id === node.id ? c.target.id : c.source.id;
+                        if (seenPartners.has(other)) return;
+                        seenPartners.add(other);
+                        const tag = c.type === 'trust' ? '信任' : c.type === 'ally' ? '同盟' : '怀疑';
+                        partnerLabels.push(`${other}(${tag})`);
+                    });
+                    const topPartners = partnerLabels.slice(0, 4).join(' · ');
+
+                    const highlight = allies > 0
+                        ? '🐺 社交网络异常：检测到同盟/协同行为，可能存在阵营协作。'
+                        : '🛡️ 社交关系清晰：信任与怀疑分布均衡。';
+
+                    const analysis = `${highlight}<br>连接概览：信任${trusts} · 怀疑${suspects} · 同盟${allies}${topPartners ? '<br>主要连接：' + topPartners : ''}`;
+
+                    return `
+                        <div class="player-card" onclick="showAnalysis('${node.id}（${getRoleName(player.role)}）社交网络分析', '${analysis}')">
+                            <div class="player-header">
+                                <div class="player-name">${node.id}</div>
+                                <div class="player-role role-${player.role}">${getRoleName(player.role)}</div>
+                            </div>
+                            <div class="metrics">
+                                <div class="metric">
+                                    <span>信任度</span>
+                                    <span style="color:#5eead4; font-weight:600;">${node.trust.toFixed(2)}</span>
+                                </div>
+                                <div class="metric-bar">
+                                    <div class="metric-fill" style="width: ${node.trust * 100}%; background: #5eead4;"></div>
+                                </div>
+                                <div class="metric">
+                                    <span>连接数</span>
+                                    <span style="color:#38bdf8; font-weight:600;">${connections.length}</span>
+                                </div>
+                                <div style="font-size: 0.8em; margin-top: 10px; color: #94a3b8; line-height: 1.4;">
+                                    ${topPartners || '暂无更多连接'}
+                                </div>
+                            </div>
+                            <div class="analysis-text">
+                                ${analysis}
+                            </div>
+                            <div class="click-hint">点击查看网络定位分析 →</div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+
+        // 工具函数
+        function getMetricName(key) {
+            const names = {
+                cognitiveConsistency: '认知一致性',
+                stressResponse: '应激反应',
+                strategyPurity: '策略纯度',
+                expressiveness: '表达丰富度',
+                deceptionScore: '欺骗指数'
+            };
+            return names[key] || key;
+        }
+
+        function getMetricColor(key) {
+            const colors = {
+                cognitiveConsistency: '#5eead4',
+                stressResponse: '#38bdf8',
+                strategyPurity: '#a78bfa',
+                expressiveness: '#f472b6',
+                deceptionScore: '#ef4444'
+            };
+            return colors[key] || '#94a3b8';
+        }
+
+        function getColor(index) {
+            const colors = ['#5eead4', '#38bdf8', '#a78bfa', '#f472b6', '#f59e0b'];
+            return colors[index % colors.length];
+        }
+
+        function getRoleColor(role) {
+            const colors = {
+                werewolf: '#ef4444',
+                villager: '#60a5fa',
+                seer: '#a78bfa',
+                witch: '#f472b6',
+                hunter: '#f59e0b'
+            };
+            return colors[role] || '#94a3b8';
+        }
+
+        function getRoleName(role) {
+            const names = {
+                werewolf: '狼人',
+                villager: '村民',
+                seer: '预言家',
+                witch: '女巫',
+                hunter: '猎人'
+            };
+            return names[role] || role;
+        }
+    </script>
+</body>
+
+</html>
